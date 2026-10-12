@@ -1,5 +1,6 @@
 import { createGame, reduce, toPublic } from '../game/engine'
 import { MAX_PLAYERS, type Action, type GameState, type PublicState } from '../game/types'
+import { netLog } from './debug'
 import { Transport, type Link, type StrategyName } from './transport'
 
 /* ---------- Mensajes ---------- */
@@ -191,6 +192,7 @@ export class Session {
     this.transport.onFailure = (strategy, error) => this.onTransportFailure(strategy, error)
     this.transport.onSignaling = (open) => this.onSignaling(open)
 
+    netLog('session', { role, code, playerId, passive: role !== 'host' })
     if (role === 'host') this.startHost(game)
     else this.startClient()
     this.timers.push(setInterval(() => this.checkLink(), 2000))
@@ -251,7 +253,13 @@ export class Session {
   }
 
   private update(patch: Partial<Snapshot>): void {
+    const prev = this.snapshot
     this.snapshot = { ...this.snapshot, ...patch }
+    if (patch.status !== undefined && patch.status !== prev.status) {
+      netLog('status', { from: prev.status, to: patch.status, message: this.snapshot.message })
+    } else if (patch.message !== undefined && patch.message !== prev.message) {
+      netLog('status', { status: this.snapshot.status, message: patch.message })
+    }
     this.listeners.forEach((l) => l(this.snapshot))
   }
 
@@ -264,8 +272,8 @@ export class Session {
           if (this.closed) return
           this.update({ strategies: [...this.transport.strategies] })
         })
-        .catch(() => {
-          /* si una estrategia no carga, la otra puede seguir */
+        .catch((error: unknown) => {
+          netLog('strategy:unhandled', { strategy: s, error: error instanceof Error ? error.message : String(error) })
         })
     }
   }
@@ -457,6 +465,7 @@ export class Session {
   /* ---------- Eventos de transporte ---------- */
 
   private onMessage(data: string, peerId: string): void {
+    netLog('rx', { peerId, t: msgType(data), bytes: data.length })
     if (this.snapshot.isHost) this.hostOnMessage(data, peerId)
     else this.clientOnMessage(data, peerId)
   }
@@ -487,7 +496,8 @@ export class Session {
     this.markHostReady()
   }
 
-  private onTransportFailure(_strategy: StrategyName, error: string): void {
+  private onTransportFailure(strategy: StrategyName, error: string): void {
+    netLog('failure', { strategy, error, ice: isIceFailure(error) })
     if (!isIceFailure(error)) return
     this.iceFailed = true
     const { status } = this.snapshot
@@ -499,4 +509,13 @@ export class Session {
 /** Arma una sesión sobre un transporte falso. Sirve para probar el protocolo sin WebRTC. */
 export function createTestSession(role: 'host' | 'client', code: string, name: string, link: Link): Session {
   return Session.openForTest(role, code, name, link)
+}
+
+function msgType(data: string): string {
+  try {
+    const msg = JSON.parse(data) as { t?: unknown }
+    return typeof msg.t === 'string' ? msg.t : 'unknown'
+  } catch {
+    return 'invalid'
+  }
 }

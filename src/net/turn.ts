@@ -1,4 +1,5 @@
 import type { TurnServerConfig } from '@trystero-p2p/nostr'
+import { netLog } from './debug'
 
 /** Relays que reenvían eventos. No incluye relay.layer.systems: limita la tasa en el primer publish. */
 export const NOSTR_RELAYS = [
@@ -39,16 +40,31 @@ export function toTurnConfig(iceServers: unknown): TurnServerConfig[] | undefine
   return configs.length ? configs : undefined
 }
 
+function describeTurn(configs: TurnServerConfig[] | undefined): { servers: number; urls: string[] } {
+  const urls = (configs ?? []).flatMap((server) => (Array.isArray(server.urls) ? server.urls : [server.urls]))
+  return { servers: configs?.length ?? 0, urls }
+}
+
 /** Pide credenciales de corta vida. Sin URL, o si el Worker no responde, se sigue solo con STUN. */
 export async function loadTurnConfig(): Promise<TurnServerConfig[] | undefined> {
   const url = import.meta.env.VITE_TURN_URL
-  if (!url) return undefined
+  if (!url) {
+    netLog('turn', { ok: false, reason: 'sin VITE_TURN_URL' })
+    return undefined
+  }
+  netLog('turn', { ok: null, url })
   try {
     const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(4000) })
-    if (!res.ok) return undefined
+    if (!res.ok) {
+      netLog('turn', { ok: false, status: res.status })
+      return undefined
+    }
     const body = (await res.json()) as { iceServers?: unknown }
-    return toTurnConfig(body.iceServers)
-  } catch {
+    const configs = toTurnConfig(body.iceServers)
+    netLog('turn', { ok: Boolean(configs), ...describeTurn(configs) })
+    return configs
+  } catch (error) {
+    netLog('turn', { ok: false, error: error instanceof Error ? error.message : String(error) })
     return undefined
   }
 }

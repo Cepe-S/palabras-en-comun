@@ -1,4 +1,5 @@
 import type { Room, TurnServerConfig } from '@trystero-p2p/nostr'
+import { installNetDebug, netLog, readyName } from './debug'
 import { sendViaRoutes } from './route'
 import { loadTurnConfig, NOSTR_RELAYS } from './turn'
 
@@ -37,6 +38,7 @@ interface StrategyModule {
     callbacks?: { onJoinError?: (details: { error: string }) => void },
   ) => Room
   getRelaySockets: () => Record<string, WebSocket>
+  selfId?: string
 }
 
 /**
@@ -58,6 +60,9 @@ export class Transport implements Link {
   private pending = new Set<StrategyName>()
   private socketGetters: Array<() => Record<string, WebSocket>> = []
   private signalingTimer: ReturnType<typeof setInterval> | null = null
+  private peerTimer: ReturnType<typeof setInterval> | null = null
+  private socketState = new Map<string, number>()
+  private watchedPeers = new Set<string>()
   private _signalingOpen = false
   private closed = false
   private turnReady: Promise<TurnServerConfig[] | undefined>
@@ -66,6 +71,8 @@ export class Transport implements Link {
     private code: string,
     private passive: boolean,
   ) {
+    installNetDebug()
+    netLog('transport', { code, passive })
     this.turnReady = loadTurnConfig()
   }
 
@@ -80,10 +87,14 @@ export class Transport implements Link {
   async use(name: StrategyName): Promise<void> {
     if (this.closed || this.pending.has(name) || this.channels.some((c) => c.name === name)) return
     this.pending.add(name)
+    netLog('strategy:start', { name })
     try {
       const [mod, turnConfig] = await Promise.all([this.load(name), this.turnReady])
       if (this.closed || this.channels.some((c) => c.name === name)) return
       this.attach(name, mod, turnConfig)
+    } catch (error) {
+      netLog('strategy:fail', { name, error: error instanceof Error ? error.message : String(error) })
+      throw error
     } finally {
       this.pending.delete(name)
     }
@@ -98,7 +109,21 @@ export class Transport implements Link {
     return sendViaRoutes(peerId, data, this.channels.map((c) => c.name), this.routes, async (name, id, payload) => {
       const channel = byName.get(name)
       if (!channel) throw new Error('missing channel')
-      await channel.send(payload, id)
+      try {
+        await channel.send(payload, id)
+        netLog('tx', { strategy: name, peerId: id, bytes: payload.length, t: msgType(payload) })
+      } catch (error) {
+        netLog('tx:fail', {
+          strategy: name,
+          peerId: id,
+          t: msgType(payload),
+          error: error instanceof Error ? error.message : String(error),
+        })
+        throw error
+      }
+    }).then((ok) => {
+      if (!ok) netLog('tx:drop', { peerId, t: msgType(data), routes: [...(this.routes.get(peerId) ?? [])] })
+      return ok
     })
   }
 
@@ -108,8 +133,11 @@ export class Transport implements Link {
 
   leave(): void {
     this.closed = true
+    netLog('transport:leave', { code: this.code })
     if (this.signalingTimer) clearInterval(this.signalingTimer)
     this.signalingTimer = null
+    if (this.peerTimer) clearInterval(this.peerTimer)
+    this.peerTimer = null
     for (const c of this.channels) {
       try {
         c.room.leave()
@@ -136,9 +164,20 @@ export class Transport implements Link {
       },
       this.code,
       {
-        onJoinError: (details) => this.onFailure(name, String(details.error)),
+        onJoinError: (details) => {
+          const error = String(details.error)
+          netLog('join-error', { strategy: name, error })
+          this.onFailure(name, error)
+        },
       },
     )
+    netLog('strategy:joined', {
+      name,
+      selfId: mod.selfId ?? null,
+      passive: this.passive,
+      turn: Boolean(turnConfig?.length),
+      relays: name === 'nostr' ? NOSTR_RELAYS : null,
+    })
     const action = room.makeAction<string>('msg')
     action.onMessage = (data, { peerId }) => {
       if (typeof data === 'string') this.onMessage(data, peerId)
@@ -148,12 +187,15 @@ export class Transport implements Link {
       const first = !set
       if (!set) this.routes.set(peerId, (set = new Set()))
       set.add(name)
+      netLog('peer:join', { strategy: name, peerId, routes: [...set], first })
+      this.watchPeer(name, peerId, room)
       if (first) this.onPeerJoin(peerId)
     }
     room.onPeerLeave = (peerId) => {
       const set = this.routes.get(peerId)
       if (!set) return
       set.delete(name)
+      netLog('peer:leave', { strategy: name, peerId, routes: [...set] })
       if (set.size === 0) {
         this.routes.delete(peerId)
         this.onPeerLeave(peerId)
@@ -164,34 +206,145 @@ export class Transport implements Link {
       room,
       send: (data, target) => action.send(data, target ? { target } : undefined),
     })
-    this.watchSockets(() => mod.getRelaySockets())
+    this.watchSockets(name, () => mod.getRelaySockets())
+    this.watchPeers(name, room)
   }
 
-  private watchSockets(get: () => Record<string, WebSocket>): void {
+  private watchPeers(name: StrategyName, room: Room): void {
+    const scan = () => {
+      let peers: Record<string, RTCPeerConnection> = {}
+      try {
+        peers = room.getPeers() ?? {}
+      } catch {
+        return
+      }
+      for (const peerId of Object.keys(peers)) this.watchPeer(name, peerId, room)
+    }
+    scan()
+    if (!this.peerTimer) this.peerTimer = setInterval(scan, 500)
+  }
+
+  private watchPeer(name: StrategyName, peerId: string, room: Room): void {
+    const key = `${name}:${peerId}`
+    if (this.watchedPeers.has(key)) return
+    const pc = room.getPeers()?.[peerId]
+    if (!pc) return
+    this.watchedPeers.add(key)
+    const snapshot = (why: string) => {
+      netLog('pc', {
+        strategy: name,
+        peerId,
+        why,
+        connection: pc.connectionState,
+        ice: pc.iceConnectionState,
+        gathering: pc.iceGatheringState,
+        signaling: pc.signalingState,
+      })
+      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+        void logSelectedPair(name, peerId, pc)
+      }
+    }
+    snapshot('attach')
+    pc.addEventListener('connectionstatechange', () => snapshot('connection'))
+    pc.addEventListener('iceconnectionstatechange', () => snapshot('ice'))
+    pc.addEventListener('icegatheringstatechange', () => snapshot('gathering'))
+    pc.addEventListener('signalingstatechange', () => snapshot('signaling'))
+    pc.addEventListener('icecandidate', (ev) => {
+      const c = ev.candidate
+      if (!c) {
+        netLog('ice-candidate', { strategy: name, peerId, end: true })
+        return
+      }
+      netLog('ice-candidate', {
+        strategy: name,
+        peerId,
+        type: c.type,
+        protocol: c.protocol,
+        tcpType: c.tcpType || null,
+        address: c.address,
+        port: c.port,
+        relatedAddress: c.relatedAddress,
+        relatedPort: c.relatedPort,
+      })
+    })
+    pc.addEventListener('icecandidateerror', (ev) => {
+      netLog('ice-error', {
+        strategy: name,
+        peerId,
+        url: ev.url,
+        errorCode: ev.errorCode,
+        errorText: ev.errorText,
+        address: ev.address,
+        port: ev.port,
+      })
+    })
+  }
+
+  private watchSockets(name: StrategyName, get: () => Record<string, WebSocket>): void {
     this.socketGetters.push(get)
     if (!this.signalingTimer) this.signalingTimer = setInterval(() => this.refreshSignaling(), 500)
-    this.refreshSignaling()
+    this.refreshSignaling(name)
   }
 
-  private refreshSignaling(): void {
+  private refreshSignaling(strategy?: StrategyName): void {
     let open = false
     for (const get of this.socketGetters) {
       let sockets: Record<string, WebSocket> = {}
       try {
         sockets = get() ?? {}
-      } catch {
+      } catch (error) {
+        netLog('relay:error', { strategy: strategy ?? null, error: error instanceof Error ? error.message : String(error) })
         continue
       }
-      for (const sock of Object.values(sockets)) {
-        if (sock?.readyState === 1) open = true
+      for (const [url, sock] of Object.entries(sockets)) {
+        const state = sock?.readyState
+        if (state === 1) open = true
+        if (state == null || this.socketState.get(url) === state) continue
+        this.socketState.set(url, state)
+        netLog('relay', { url, state: readyName(state) })
       }
     }
     if (open === this._signalingOpen) return
     this._signalingOpen = open
+    netLog('signaling', { open })
     this.onSignaling(open)
-    if (open && this.signalingTimer) {
-      clearInterval(this.signalingTimer)
-      this.signalingTimer = null
+  }
+}
+
+function msgType(data: string): string {
+  try {
+    const msg = JSON.parse(data) as { t?: unknown }
+    return typeof msg.t === 'string' ? msg.t : 'unknown'
+  } catch {
+    return 'invalid'
+  }
+}
+
+async function logSelectedPair(strategy: string, peerId: string, pc: RTCPeerConnection): Promise<void> {
+  try {
+    const stats = await pc.getStats()
+    let pair: RTCIceCandidatePairStats | undefined
+    stats.forEach((report) => {
+      if (report.type === 'candidate-pair' && report.nominated && report.state === 'succeeded') {
+        pair = report
+      }
+    })
+    if (!pair) return
+    const local = stats.get(pair.localCandidateId)
+    const remote = stats.get(pair.remoteCandidateId)
+    const side = (report: RTCStats | undefined) => {
+      if (!report || (report.type !== 'local-candidate' && report.type !== 'remote-candidate')) return null
+      const c = report as RTCStats & {
+        candidateType?: string
+        protocol?: string
+        address?: string
+        port?: number
+        relayProtocol?: string
+      }
+      return { type: c.candidateType ?? null, protocol: c.protocol ?? null, address: c.address ?? null, port: c.port ?? null, relay: c.relayProtocol ?? null }
     }
+    netLog('ice-pair', { strategy, peerId, local: side(local), remote: side(remote) })
+  } catch (error) {
+    netLog('ice-pair', { strategy, peerId, error: error instanceof Error ? error.message : String(error) })
   }
 }
