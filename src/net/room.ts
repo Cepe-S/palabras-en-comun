@@ -1,0 +1,436 @@
+import { createGame, reduce, toPublic } from '../game/engine'
+import { MAX_PLAYERS, type Action, type GameState, type PublicState } from '../game/types'
+import { Transport } from './transport'
+
+/* ---------- Mensajes ---------- */
+
+type ClientMsg = { t: 'hello'; playerId: string; name: string } | { t: 'act'; action: UiAction }
+type HostMsg =
+  | { t: 'state'; state: PublicState }
+  | { t: 'welcome'; words: string[] }
+  | { t: 'rejected'; reason: string }
+  | { t: 'bye' }
+
+/** Acciones que dispara la interfaz; el id del jugador lo completa la sesión. */
+export type UiAction =
+  | { type: 'start' }
+  | { type: 'reroll' }
+  | { type: 'begin' }
+  | { type: 'words'; words: string[]; ready?: boolean }
+  | { type: 'next' }
+  | { type: 'skipReveal' }
+  | { type: 'playAgain' }
+
+const ALLOWED: UiAction['type'][] = [
+  'start',
+  'reroll',
+  'begin',
+  'words',
+  'next',
+  'skipReveal',
+  'playAgain',
+]
+
+/* ---------- Estado observable ---------- */
+
+export type Status = 'connecting' | 'connected' | 'hostLost' | 'rejected' | 'notFound'
+
+export interface Snapshot {
+  status: Status
+  message: string | null
+  code: string
+  isHost: boolean
+  playerId: string
+  name: string
+  state: PublicState | null
+  /** Diferencia entre el reloj del anfitrión y el local (ms). */
+  clockOffset: number
+  /** Palabras que el anfitrión ya tenía guardadas para este jugador (reconexión). */
+  myWords: string[] | null
+  /** Estrategias de señalización activas (informativo). */
+  strategies: string[]
+}
+
+/* ---------- Persistencia por pestaña ---------- */
+
+const KEY_ID = 'pec.playerId'
+const KEY_SAVED = 'pec.saved'
+
+export interface SavedSession {
+  role: 'host' | 'client'
+  code: string
+  name: string
+  game?: GameState
+}
+
+export function getPlayerId(): string {
+  let id = sessionStorage.getItem(KEY_ID)
+  if (!id) {
+    id = crypto.randomUUID()
+    sessionStorage.setItem(KEY_ID, id)
+  }
+  return id
+}
+
+export function loadSaved(): SavedSession | null {
+  try {
+    const raw = sessionStorage.getItem(KEY_SAVED)
+    return raw ? (JSON.parse(raw) as SavedSession) : null
+  } catch {
+    return null
+  }
+}
+
+export function clearSaved(): void {
+  sessionStorage.removeItem(KEY_SAVED)
+}
+
+function save(data: SavedSession): void {
+  try {
+    sessionStorage.setItem(KEY_SAVED, JSON.stringify(data))
+  } catch {
+    /* sin espacio o modo privado: seguimos sin persistir */
+  }
+}
+
+/* ---------- Códigos de sala ---------- */
+
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+
+export function generateCode(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(5))
+  return Array.from(bytes, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('')
+}
+
+export function normalizeCode(input: string): string {
+  return input.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5)
+}
+
+export function roomLink(code: string): string {
+  const { origin, pathname } = window.location
+  return `${origin}${pathname}#/sala/${code}`
+}
+
+export function codeFromHash(hash: string): string | null {
+  const match = /^#\/sala\/([A-Za-z0-9]{5})$/.exec(hash)
+  return match ? match[1].toUpperCase() : null
+}
+
+/* ---------- Sesión ---------- */
+
+const HEARTBEAT_MS = 4000
+const HOST_TIMEOUT_MS = 15000
+const FALLBACK_AFTER_MS = 8000
+const NOT_FOUND_AFTER_MS = 30000
+
+type Listener = (snap: Snapshot) => void
+
+export class Session {
+  snapshot: Snapshot
+  private listeners = new Set<Listener>()
+  private transport: Transport
+  private timers: ReturnType<typeof setInterval>[] = []
+  private timeouts: ReturnType<typeof setTimeout>[] = []
+  private closed = false
+
+  // Anfitrión
+  private game: GameState | null = null
+  private peerToPlayer = new Map<string, string>()
+
+  // Cliente
+  private hostPeerId: string | null = null
+  private lastStateAt = 0
+  private startedAt = Date.now()
+
+  private constructor(role: 'host' | 'client', code: string, name: string, game?: GameState) {
+    const playerId = getPlayerId()
+    this.snapshot = {
+      status: 'connecting',
+      message: null,
+      code,
+      isHost: role === 'host',
+      playerId,
+      name,
+      state: null,
+      clockOffset: 0,
+      myWords: null,
+      strategies: [],
+    }
+    this.transport = new Transport(code)
+    this.transport.onMessage = (data, peerId) => this.onMessage(data, peerId)
+    this.transport.onPeerJoin = (peerId) => this.onPeerJoin(peerId)
+    this.transport.onPeerLeave = (peerId) => this.onPeerLeave(peerId)
+
+    if (role === 'host') this.startHost(game)
+    else this.startClient()
+  }
+
+  static host(name: string, resume?: SavedSession): Session {
+    return new Session('host', resume?.code ?? generateCode(), name, resume?.game)
+  }
+
+  static join(code: string, name: string): Session {
+    return new Session('client', code, name)
+  }
+
+  static resume(saved: SavedSession): Session {
+    return saved.role === 'host'
+      ? Session.host(saved.name, saved)
+      : Session.join(saved.code, saved.name)
+  }
+
+  subscribe(listener: Listener): () => void {
+    this.listeners.add(listener)
+    return () => this.listeners.delete(listener)
+  }
+
+  /** Hora actual alineada con el reloj del anfitrión. */
+  now(): number {
+    return Date.now() + this.snapshot.clockOffset
+  }
+
+  act(action: UiAction): void {
+    if (this.snapshot.isHost) {
+      this.applyHost(this.toAction(action, this.snapshot.playerId))
+    } else {
+      this.sendToHost({ t: 'act', action })
+    }
+  }
+
+  leave(): void {
+    if (this.closed) return
+    if (this.snapshot.isHost) this.transport.broadcast(JSON.stringify({ t: 'bye' } satisfies HostMsg))
+    this.closed = true
+    this.timers.forEach(clearInterval)
+    this.timeouts.forEach(clearTimeout)
+    this.transport.leave()
+    clearSaved()
+  }
+
+  /** Cierra sin borrar lo guardado (para recargar o reintentar). */
+  close(): void {
+    if (this.closed) return
+    this.closed = true
+    this.timers.forEach(clearInterval)
+    this.timeouts.forEach(clearTimeout)
+    this.transport.leave()
+  }
+
+  private update(patch: Partial<Snapshot>): void {
+    this.snapshot = { ...this.snapshot, ...patch }
+    this.listeners.forEach((l) => l(this.snapshot))
+  }
+
+  private connect(strategies: ('nostr' | 'torrent')[]): void {
+    for (const s of strategies) {
+      this.transport
+        .use(s)
+        .then(() => this.update({ strategies: this.transport.strategies }))
+        .catch(() => {
+          /* si una estrategia falla al cargar, la otra puede seguir */
+        })
+    }
+  }
+
+  /* ---------- Anfitrión ---------- */
+
+  private startHost(resume?: GameState): void {
+    const { playerId, name, code } = this.snapshot
+    let game = resume ?? createGame(playerId, name)
+    if (resume) {
+      // Tras recargar, todos quedan desconectados hasta que vuelvan a saludar.
+      game = {
+        ...game,
+        players: game.players.map((p) => ({ ...p, connected: p.id === game.hostId })),
+      }
+    }
+    this.game = game
+    this.update({ status: 'connected', state: toPublic(game, Date.now()) })
+    save({ role: 'host', code, name, game })
+
+    this.connect(['nostr', 'torrent'])
+
+    this.timers.push(
+      setInterval(() => this.applyHost({ type: 'tick' }), 500),
+      setInterval(() => this.publish(), HEARTBEAT_MS),
+    )
+  }
+
+  private toAction(action: UiAction, playerId: string): Action {
+    switch (action.type) {
+      case 'words':
+        return { type: 'words', id: playerId, words: action.words, ready: action.ready }
+      default:
+        return { ...action, by: playerId }
+    }
+  }
+
+  private applyHost(action: Action): void {
+    if (!this.game) return
+    const next = reduce(this.game, action, { now: Date.now(), random: Math.random })
+    if (next === this.game) return
+    this.game = next
+    save({ role: 'host', code: this.snapshot.code, name: this.snapshot.name, game: next })
+    this.publish()
+  }
+
+  private publish(): void {
+    if (!this.game) return
+    const state = toPublic(this.game, Date.now())
+    this.update({ state })
+    this.transport.broadcast(JSON.stringify({ t: 'state', state } satisfies HostMsg))
+  }
+
+  private sendHostMsg(peerId: string, msg: HostMsg): void {
+    this.transport.sendTo(peerId, JSON.stringify(msg))
+  }
+
+  private hostOnMessage(data: string, peerId: string): void {
+    const game = this.game
+    if (!game) return
+    let msg: ClientMsg
+    try {
+      msg = JSON.parse(data) as ClientMsg
+    } catch {
+      return
+    }
+
+    if (msg.t === 'hello') {
+      if (typeof msg.playerId !== 'string' || typeof msg.name !== 'string') return
+      const known = game.players.some((p) => p.id === msg.playerId)
+      if (!known && game.phase !== 'lobby') {
+        this.sendHostMsg(peerId, { t: 'rejected', reason: 'La partida ya empezó. Esperá a la próxima.' })
+        return
+      }
+      if (!known && game.players.length >= MAX_PLAYERS) {
+        this.sendHostMsg(peerId, { t: 'rejected', reason: 'La sala está llena.' })
+        return
+      }
+      this.peerToPlayer.set(peerId, msg.playerId)
+      this.applyHost({ type: 'join', id: msg.playerId, name: msg.name })
+      const mine = this.game?.phase === 'writing' ? this.game.submissions[msg.playerId] : undefined
+      this.sendHostMsg(peerId, { t: 'welcome', words: mine ?? [] })
+      this.sendHostMsg(peerId, { t: 'state', state: toPublic(this.game!, Date.now()) })
+      return
+    }
+
+    if (msg.t === 'act') {
+      const playerId = this.peerToPlayer.get(peerId)
+      const action = msg.action
+      if (!playerId || !action || !ALLOWED.includes(action.type)) return
+      if (action.type === 'words' && !Array.isArray(action.words)) return
+      this.applyHost(this.toAction(action, playerId))
+    }
+  }
+
+  /* ---------- Cliente ---------- */
+
+  private startClient(): void {
+    const { code, name } = this.snapshot
+    save({ role: 'client', code, name })
+    this.connect(['nostr'])
+
+    this.timers.push(
+      // Reintenta el saludo hasta recibir el estado de la sala.
+      setInterval(() => {
+        if (!this.snapshot.state || this.snapshot.status === 'hostLost') this.sayHello()
+      }, 2000),
+      setInterval(() => this.checkHost(), 2000),
+    )
+    this.timeouts.push(setTimeout(() => this.connect(['torrent']), FALLBACK_AFTER_MS))
+  }
+
+  private sayHello(peerId?: string): void {
+    const msg: ClientMsg = { t: 'hello', playerId: this.snapshot.playerId, name: this.snapshot.name }
+    const data = JSON.stringify(msg)
+    if (peerId) this.transport.sendTo(peerId, data)
+    else this.transport.broadcast(data)
+  }
+
+  private sendToHost(msg: ClientMsg): void {
+    if (!this.hostPeerId) return
+    this.transport.sendTo(this.hostPeerId, JSON.stringify(msg))
+  }
+
+  private checkHost(): void {
+    const { status, state } = this.snapshot
+    const now = Date.now()
+    if (status === 'rejected') return
+    if (!state) {
+      if (status !== 'notFound' && now - this.startedAt > NOT_FOUND_AFTER_MS) {
+        this.update({
+          status: 'notFound',
+          message: 'No encontramos esa sala. Revisá el código o pedile al anfitrión que la vuelva a abrir.',
+        })
+      }
+      return
+    }
+    if (status === 'connected' && now - this.lastStateAt > HOST_TIMEOUT_MS) {
+      this.update({ status: 'hostLost', message: 'Se perdió la conexión con el anfitrión.' })
+    }
+  }
+
+  private clientOnMessage(data: string, peerId: string): void {
+    let msg: HostMsg
+    try {
+      msg = JSON.parse(data) as HostMsg
+    } catch {
+      return
+    }
+    switch (msg.t) {
+      case 'state': {
+        this.hostPeerId = peerId
+        this.lastStateAt = Date.now()
+        this.update({
+          status: 'connected',
+          message: null,
+          state: msg.state,
+          clockOffset: msg.state.hostNow - Date.now(),
+          // Las palabras guardadas solo sirven durante la escritura de esa ronda.
+          myWords: msg.state.phase === 'writing' ? this.snapshot.myWords : null,
+        })
+        // En el lobby un corte te saca de la lista: volvemos a anotarnos.
+        if (!msg.state.players.some((p) => p.id === this.snapshot.playerId)) this.sayHello(peerId)
+        break
+      }
+      case 'welcome':
+        this.update({ myWords: msg.words })
+        break
+      case 'rejected':
+        this.update({ status: 'rejected', message: msg.reason })
+        break
+      case 'bye':
+        if (peerId === this.hostPeerId) {
+          this.update({ status: 'hostLost', message: 'El anfitrión cerró la sala.' })
+        }
+        break
+    }
+  }
+
+  /* ---------- Eventos de transporte ---------- */
+
+  private onMessage(data: string, peerId: string): void {
+    if (this.snapshot.isHost) this.hostOnMessage(data, peerId)
+    else this.clientOnMessage(data, peerId)
+  }
+
+  private onPeerJoin(peerId: string): void {
+    if (this.snapshot.isHost) {
+      // El estado completo se manda cuando el jugador saluda; mientras tanto no hace falta.
+      return
+    }
+    if (this.snapshot.status !== 'rejected') this.sayHello(peerId)
+  }
+
+  private onPeerLeave(peerId: string): void {
+    if (this.snapshot.isHost) {
+      const playerId = this.peerToPlayer.get(peerId)
+      this.peerToPlayer.delete(peerId)
+      if (!playerId) return
+      const stillThere = [...this.peerToPlayer.values()].includes(playerId)
+      if (!stillThere) this.applyHost({ type: 'disconnect', id: playerId })
+    } else if (peerId === this.hostPeerId && this.snapshot.status === 'connected') {
+      this.update({ status: 'hostLost', message: 'Se perdió la conexión con el anfitrión.' })
+    }
+  }
+}

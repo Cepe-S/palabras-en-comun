@@ -1,0 +1,23 @@
+/** Palabras iniciales que se sortean cada ronda. Todas inspiran muchas asociaciones. */
+export const WORDS: readonly string[] = [
+  'Playa', 'Cumpleaños', 'Escuela', 'Cocina', 'Invierno', 'Verano', 'Montaña', 'Ciudad',
+  'Hospital', 'Circo', 'Cine', 'Biblioteca', 'Fútbol', 'Navidad', 'Piratas', 'Espacio',
+  'Selva', 'Desierto', 'Castillo', 'Supermercado', 'Aeropuerto', 'Granja', 'Museo', 'Parque',
+  'Tormenta', 'Fiesta', 'Boda', 'Mercado', 'Camping', 'Playlist', 'Pizza', 'Chocolate',
+  'Café', 'Helado', 'Asado', 'Desayuno', 'Postre', 'Sopa', 'Ensalada', 'Pan',
+  'Fruta', 'Queso', 'Hamburguesa', 'Mate', 'Tortuga', 'Perro', 'Gato', 'León',
+  'Pingüino', 'Abeja', 'Serpiente', 'Delfín', 'Búho', 'Elefante', 'Mariposa', 'Lobo',
+  'Dragón', 'Fantasma', 'Vampiro', 'Bruja', 'Robot', 'Sirena', 'Superhéroe', 'Detective',
+  'Doctor', 'Bombero', 'Astronauta', 'Mago', 'Rey', 'Cocinero', 'Payaso', 'Músico',
+  'Guitarra', 'Piano', 'Baile', 'Concierto', 'Teatro', 'Pintura', 'Libro', 'Poesía',
+  'Dinero', 'Banco', 'Trabajo', 'Oficina', 'Reunión', 'Examen', 'Tarea', 'Vacaciones',
+  'Viaje', 'Hotel', 'Mapa', 'Tren', 'Avión', 'Barco', 'Bicicleta', 'Auto',
+  'Teléfono', 'Computadora', 'Internet', 'Videojuego', 'Cámara', 'Televisión', 'Radio', 'Reloj',
+  'Luna', 'Sol', 'Estrella', 'Lluvia', 'Nieve', 'Fuego', 'Agua', 'Viento',
+  'Bosque', 'Río', 'Océano', 'Isla', 'Volcán', 'Cueva', 'Puente', 'Faro',
+  'Casa', 'Jardín', 'Dormitorio', 'Baño', 'Espejo', 'Ventana', 'Puerta', 'Llave',
+  'Paraguas', 'Mochila', 'Zapatos', 'Sombrero', 'Anteojos', 'Disfraz', 'Regalo', 'Globo',
+  'Tesoro', 'Aventura', 'Misterio', 'Magia', 'Sueño', 'Miedo', 'Amistad', 'Amor',
+  'Deporte', 'Gimnasio', 'Natación', 'Tenis', 'Básquet', 'Carrera', 'Campeón', 'Medalla',
+  'Policía', 'Banda', 'Juguete', 'Ajedrez', 'Cartas', 'Dado', 'Rompecabezas', 'Tablero',
+]
