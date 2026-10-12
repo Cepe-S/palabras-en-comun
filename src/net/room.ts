@@ -63,7 +63,7 @@ export interface Snapshot {
 }
 
 export function isIceFailure(error: string): boolean {
-  return /could not connect to peer|TURN|ICE|exchanging SDP/i.test(error)
+  return /could not connect to peer|TURN|ICE|exchanging SDP|RTCPeerConnection/i.test(error)
 }
 
 /**
@@ -149,7 +149,12 @@ export function codeFromHash(hash: string): string | null {
 /* ---------- Sesión ---------- */
 
 const HEARTBEAT_MS = 4000
-const HOST_TIMEOUT_MS = 15000
+/**
+ * El anfitrión publica el estado cada 4 s. Un silencio más corto puede ser la
+ * pestaña en segundo plano o un canal que se trabó y después sigue: no alcanza
+ * para declarar la partida perdida. Si el par se va de verdad, eso se avisa al toque.
+ */
+const HOST_TIMEOUT_MS = 45_000
 
 type Listener = (snap: Snapshot) => void
 
@@ -501,7 +506,10 @@ export class Session {
     if (!isIceFailure(error)) return
     this.iceFailed = true
     const { status } = this.snapshot
-    if (status === 'rejected' || status === 'notFound' || status === 'offline') return
+    // Si la partida ya anda por el otro canal, un fallo de BitTorrent no es la conexión.
+    if (status === 'connected' || status === 'hostLost' || status === 'rejected' || status === 'notFound' || status === 'offline') {
+      return
+    }
     this.update({ message: ICE_MESSAGE })
   }
 }

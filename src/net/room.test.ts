@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { type PublicState } from '../game/types'
 import {
   createTestSession,
   diagnoseSilence,
   GIVE_UP_MS,
   ICE_MESSAGE,
+  isIceFailure,
   PUBLISHING_MESSAGE,
   type Session,
 } from './room'
@@ -75,6 +77,10 @@ describe('diagnoseSilence', () => {
   it('un fallo de ICE no se disfraza de sala inexistente', () => {
     expect(diagnoseSilence({ elapsedMs: GIVE_UP_MS, relaySeen: true, iceFailed: true })).toBe('ice')
   })
+
+  it('crear el canal sin WebRTC también cuenta como fallo de conexión', () => {
+    expect(isIceFailure('RTCPeerConnection is not a constructor')).toBe(true)
+  })
 })
 
 describe('sesión con transporte falso', () => {
@@ -142,4 +148,46 @@ describe('sesión con transporte falso', () => {
     expect(session.snapshot.status).toBe('connecting')
     expect(session.snapshot.message).toBe(ICE_MESSAGE)
   })
+
+  it('si la partida ya está conectada, el fallo del otro canal no tapa la mesa', () => {
+    const link = new FakeLink()
+    session = createTestSession('client', 'ABCDE', 'Sol', link)
+    link.receive('host', JSON.stringify({ t: 'state', state: lobbyState() }))
+    expect(session.snapshot.status).toBe('connected')
+    link.fail('torrent', 'could not connect to peer host after exchanging SDP; check that your TURN server URLs and credentials are reachable by both peers')
+    expect(session.snapshot.status).toBe('connected')
+    expect(session.snapshot.message).toBeNull()
+  })
+
+  it('un silencio breve del anfitrión no corta la partida', () => {
+    vi.useFakeTimers()
+    try {
+      const link = new FakeLink()
+      session = createTestSession('client', 'ABCDE', 'Sol', link)
+      link.receive('host', JSON.stringify({ t: 'state', state: lobbyState() }))
+      vi.advanceTimersByTime(20_000)
+      expect(session.snapshot.status).toBe('connected')
+      vi.advanceTimersByTime(30_000)
+      expect(session.snapshot.status).toBe('hostLost')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
+
+function lobbyState(): PublicState {
+  return {
+    phase: 'lobby',
+    round: 1,
+    totalRounds: 3,
+    hostId: 'h',
+    players: [{ id: 'h', name: 'Ana', color: 0, connected: true, ready: false }],
+    word: null,
+    endsAt: null,
+    hostNow: Date.now(),
+    steps: [],
+    totalSteps: 0,
+    history: {},
+    roundPoints: {},
+  }
+}

@@ -32,6 +32,7 @@ interface StrategyModule {
       appId: string
       passive?: boolean
       turnConfig?: TurnServerConfig[]
+      rtcPolyfill?: typeof RTCPeerConnection
       relayConfig?: { urls: string[] }
     },
     roomId: string,
@@ -155,10 +156,18 @@ export class Transport implements Link {
   }
 
   private attach(name: StrategyName, mod: StrategyModule, turnConfig: TurnServerConfig[] | undefined): void {
+    const rtcPolyfill = globalThis.RTCPeerConnection
+    if (typeof rtcPolyfill !== 'function') {
+      const error = 'RTCPeerConnection is not a constructor'
+      netLog('webrtc', { strategy: name, type: typeof rtcPolyfill })
+      this.onFailure(name, error)
+      return
+    }
     const room = mod.joinRoom(
       {
         appId: APP_ID,
         passive: this.passive,
+        rtcPolyfill,
         ...(turnConfig ? { turnConfig } : {}),
         ...(name === 'nostr' ? { relayConfig: { urls: NOSTR_RELAYS } } : {}),
       },
