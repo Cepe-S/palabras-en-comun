@@ -26,6 +26,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+        env:
+          VITE_TURN_URL: ${{ vars.VITE_TURN_URL }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

@@ -65,6 +65,12 @@ export function Shell({ snap, hold, onLeave, onRetry, children }: Props) {
 
       {state && <Stepper phase={state.phase} round={state.round} total={state.totalRounds} />}
 
+      {snap.message && snap.status !== 'hostLost' && (
+        <div class={`notice ${snap.status === 'connecting' ? '' : 'notice--bad'}`} role="status">
+          {snap.message}
+        </div>
+      )}
+
       {snap.status === 'hostLost' && (
         <div class="notice notice--bad stack" role="alert">
           <span>{snap.message ?? 'Se perdió la conexión.'} Seguimos intentando reconectar…</span>

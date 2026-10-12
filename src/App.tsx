@@ -17,7 +17,7 @@ import { WordPhase } from './ui/WordPhase'
 import { WritingPhase } from './ui/WritingPhase'
 
 function ConnectScreen({ snap, onLeave }: { snap: Snapshot; onLeave: () => void }) {
-  const failed = snap.status === 'rejected' || snap.status === 'notFound'
+  const failed = snap.status === 'rejected' || snap.status === 'notFound' || snap.status === 'offline'
   return (
     <div class="app">
       <div class="home stack" style="gap:20px">
@@ -32,9 +32,16 @@ function ConnectScreen({ snap, onLeave }: { snap: Snapshot; onLeave: () => void 
               {snap.message}
             </p>
           ) : (
-            <p class="muted">
-              Buscando al anfitrión. Puede tardar unos segundos, ¡no cierres la página!
-            </p>
+            <>
+              <p class="muted">
+                Buscando al anfitrión. Puede tardar unos segundos, ¡no cierres la página!
+              </p>
+              {snap.message && (
+                <p class="notice" role="status">
+                  {snap.message}
+                </p>
+              )}
+            </>
           )}
           <button class="btn" type="button" onClick={onLeave}>
             {failed ? 'Volver al inicio' : 'Cancelar'}
@@ -110,7 +117,7 @@ export function App() {
   }
 
   const state = snap.state
-  if (!state || snap.status === 'rejected' || snap.status === 'notFound') {
+  if (!state || snap.status === 'rejected' || snap.status === 'notFound' || snap.status === 'offline') {
     return <ConnectScreen snap={snap} onLeave={leave} />
   }
 

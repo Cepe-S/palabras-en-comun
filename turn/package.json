@@ -1,0 +1,13 @@
+{
+  "name": "palabras-en-comun-turn",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "types": "wrangler types",
+    "check": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "^4.149.0"
+  }
+}

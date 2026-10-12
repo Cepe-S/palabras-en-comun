@@ -1,6 +1,6 @@
 import { createGame, reduce, toPublic } from '../game/engine'
 import { MAX_PLAYERS, type Action, type GameState, type PublicState } from '../game/types'
-import { Transport } from './transport'
+import { Transport, type Link, type StrategyName } from './transport'
 
 /* ---------- Mensajes ---------- */
 
@@ -33,7 +33,17 @@ const ALLOWED: UiAction['type'][] = [
 
 /* ---------- Estado observable ---------- */
 
-export type Status = 'connecting' | 'connected' | 'hostLost' | 'rejected' | 'notFound'
+export type Status = 'connecting' | 'connected' | 'hostLost' | 'rejected' | 'notFound' | 'offline'
+
+export const PUBLISHING_MESSAGE = 'Publicando la sala…'
+export const ICE_MESSAGE =
+  'Tu red bloqueó la conexión directa entre navegadores. Si estás con datos móviles o en una red restringida, probá con Wi-Fi.'
+export const OFFLINE_MESSAGE = 'No pudimos contactar a los relays de conexión. Probá con otra red o más tarde.'
+export const NOT_FOUND_MESSAGE =
+  'No encontramos esa sala. Revisá el código o pedile al anfitrión que la vuelva a abrir.'
+
+/** Más que el backoff de un relay limitado (60 s) y que el gathering de ICE. */
+export const GIVE_UP_MS = 75_000
 
 export interface Snapshot {
   status: Status
@@ -49,6 +59,25 @@ export interface Snapshot {
   myWords: string[] | null
   /** Estrategias de señalización activas (informativo). */
   strategies: string[]
+}
+
+export function isIceFailure(error: string): boolean {
+  return /could not connect to peer|TURN|ICE|exchanging SDP/i.test(error)
+}
+
+/**
+ * Qué decir cuando pasó el plazo y todavía no hay canal de datos.
+ * `notFound` solo si los relays respondieron y nadie intercambió SDP.
+ */
+export function diagnoseSilence(input: {
+  elapsedMs: number
+  relaySeen: boolean
+  iceFailed: boolean
+}): 'wait' | 'notFound' | 'offline' | 'ice' {
+  if (input.elapsedMs < GIVE_UP_MS) return 'wait'
+  if (input.iceFailed) return 'ice'
+  if (!input.relaySeen) return 'offline'
+  return 'notFound'
 }
 
 /* ---------- Persistencia por pestaña ---------- */
@@ -120,17 +149,14 @@ export function codeFromHash(hash: string): string | null {
 
 const HEARTBEAT_MS = 4000
 const HOST_TIMEOUT_MS = 15000
-const FALLBACK_AFTER_MS = 8000
-const NOT_FOUND_AFTER_MS = 30000
 
 type Listener = (snap: Snapshot) => void
 
 export class Session {
   snapshot: Snapshot
   private listeners = new Set<Listener>()
-  private transport: Transport
+  private transport: Link
   private timers: ReturnType<typeof setInterval>[] = []
-  private timeouts: ReturnType<typeof setTimeout>[] = []
   private closed = false
 
   // Anfitrión
@@ -141,8 +167,10 @@ export class Session {
   private hostPeerId: string | null = null
   private lastStateAt = 0
   private startedAt = Date.now()
+  private relaySeen = false
+  private iceFailed = false
 
-  private constructor(role: 'host' | 'client', code: string, name: string, game?: GameState) {
+  private constructor(role: 'host' | 'client', code: string, name: string, game?: GameState, link?: Link) {
     const playerId = getPlayerId()
     this.snapshot = {
       status: 'connecting',
@@ -156,13 +184,16 @@ export class Session {
       myWords: null,
       strategies: [],
     }
-    this.transport = new Transport(code)
+    this.transport = link ?? new Transport(code, role !== 'host')
     this.transport.onMessage = (data, peerId) => this.onMessage(data, peerId)
     this.transport.onPeerJoin = (peerId) => this.onPeerJoin(peerId)
     this.transport.onPeerLeave = (peerId) => this.onPeerLeave(peerId)
+    this.transport.onFailure = (strategy, error) => this.onTransportFailure(strategy, error)
+    this.transport.onSignaling = (open) => this.onSignaling(open)
 
     if (role === 'host') this.startHost(game)
     else this.startClient()
+    this.timers.push(setInterval(() => this.checkLink(), 2000))
   }
 
   static host(name: string, resume?: SavedSession): Session {
@@ -177,6 +208,11 @@ export class Session {
     return saved.role === 'host'
       ? Session.host(saved.name, saved)
       : Session.join(saved.code, saved.name)
+  }
+
+  /** Arma una sesión sobre un transporte falso. Sirve para probar el protocolo sin WebRTC. */
+  static openForTest(role: 'host' | 'client', code: string, name: string, link: Link): Session {
+    return new Session(role, code, name, undefined, link)
   }
 
   subscribe(listener: Listener): () => void {
@@ -202,7 +238,6 @@ export class Session {
     if (this.snapshot.isHost) this.transport.broadcast(JSON.stringify({ t: 'bye' } satisfies HostMsg))
     this.closed = true
     this.timers.forEach(clearInterval)
-    this.timeouts.forEach(clearTimeout)
     this.transport.leave()
     clearSaved()
   }
@@ -212,7 +247,6 @@ export class Session {
     if (this.closed) return
     this.closed = true
     this.timers.forEach(clearInterval)
-    this.timeouts.forEach(clearTimeout)
     this.transport.leave()
   }
 
@@ -221,15 +255,24 @@ export class Session {
     this.listeners.forEach((l) => l(this.snapshot))
   }
 
-  private connect(strategies: ('nostr' | 'torrent')[]): void {
+  private connect(): void {
+    const strategies: StrategyName[] = ['nostr', 'torrent']
     for (const s of strategies) {
       this.transport
         .use(s)
-        .then(() => this.update({ strategies: this.transport.strategies }))
+        .then(() => {
+          if (this.closed) return
+          this.update({ strategies: [...this.transport.strategies] })
+        })
         .catch(() => {
-          /* si una estrategia falla al cargar, la otra puede seguir */
+          /* si una estrategia no carga, la otra puede seguir */
         })
     }
+  }
+
+  private markHostReady(): void {
+    if (!this.snapshot.isHost || this.snapshot.status !== 'connecting') return
+    this.update({ status: 'connected', message: this.iceFailed ? this.snapshot.message : null })
   }
 
   /* ---------- Anfitrión ---------- */
@@ -245,10 +288,10 @@ export class Session {
       }
     }
     this.game = game
-    this.update({ status: 'connected', state: toPublic(game, Date.now()) })
+    this.update({ state: toPublic(game, Date.now()), message: PUBLISHING_MESSAGE })
     save({ role: 'host', code, name, game })
 
-    this.connect(['nostr', 'torrent'])
+    this.connect()
 
     this.timers.push(
       setInterval(() => this.applyHost({ type: 'tick' }), 500),
@@ -282,7 +325,7 @@ export class Session {
   }
 
   private sendHostMsg(peerId: string, msg: HostMsg): void {
-    this.transport.sendTo(peerId, JSON.stringify(msg))
+    void this.transport.sendTo(peerId, JSON.stringify(msg))
   }
 
   private hostOnMessage(data: string, peerId: string): void {
@@ -328,44 +371,48 @@ export class Session {
   private startClient(): void {
     const { code, name } = this.snapshot
     save({ role: 'client', code, name })
-    this.connect(['nostr'])
+    this.connect()
 
     this.timers.push(
       // Reintenta el saludo hasta recibir el estado de la sala.
       setInterval(() => {
         if (!this.snapshot.state || this.snapshot.status === 'hostLost') this.sayHello()
       }, 2000),
-      setInterval(() => this.checkHost(), 2000),
     )
-    this.timeouts.push(setTimeout(() => this.connect(['torrent']), FALLBACK_AFTER_MS))
   }
 
   private sayHello(peerId?: string): void {
     const msg: ClientMsg = { t: 'hello', playerId: this.snapshot.playerId, name: this.snapshot.name }
     const data = JSON.stringify(msg)
-    if (peerId) this.transport.sendTo(peerId, data)
+    if (peerId) void this.transport.sendTo(peerId, data)
     else this.transport.broadcast(data)
   }
 
   private sendToHost(msg: ClientMsg): void {
     if (!this.hostPeerId) return
-    this.transport.sendTo(this.hostPeerId, JSON.stringify(msg))
+    void this.transport.sendTo(this.hostPeerId, JSON.stringify(msg))
   }
 
-  private checkHost(): void {
+  private checkLink(): void {
     const { status, state } = this.snapshot
-    const now = Date.now()
-    if (status === 'rejected') return
-    if (!state) {
-      if (status !== 'notFound' && now - this.startedAt > NOT_FOUND_AFTER_MS) {
-        this.update({
-          status: 'notFound',
-          message: 'No encontramos esa sala. Revisá el código o pedile al anfitrión que la vuelva a abrir.',
-        })
-      }
+    if (status === 'rejected' || status === 'notFound' || status === 'offline') return
+    const diagnosis = diagnoseSilence({
+      elapsedMs: Date.now() - this.startedAt,
+      relaySeen: this.relaySeen,
+      iceFailed: this.iceFailed,
+    })
+
+    if (this.snapshot.isHost) {
+      if (status === 'connecting' && diagnosis === 'offline') this.update({ message: OFFLINE_MESSAGE })
       return
     }
-    if (status === 'connected' && now - this.lastStateAt > HOST_TIMEOUT_MS) {
+
+    if (!state) {
+      if (diagnosis === 'notFound') this.update({ status: 'notFound', message: NOT_FOUND_MESSAGE })
+      else if (diagnosis === 'offline') this.update({ status: 'offline', message: OFFLINE_MESSAGE })
+      return
+    }
+    if (status === 'connected' && Date.now() - this.lastStateAt > HOST_TIMEOUT_MS) {
       this.update({ status: 'hostLost', message: 'Se perdió la conexión con el anfitrión.' })
     }
   }
@@ -416,7 +463,7 @@ export class Session {
 
   private onPeerJoin(peerId: string): void {
     if (this.snapshot.isHost) {
-      // El estado completo se manda cuando el jugador saluda; mientras tanto no hace falta.
+      this.markHostReady()
       return
     }
     if (this.snapshot.status !== 'rejected') this.sayHello(peerId)
@@ -433,4 +480,23 @@ export class Session {
       this.update({ status: 'hostLost', message: 'Se perdió la conexión con el anfitrión.' })
     }
   }
+
+  private onSignaling(open: boolean): void {
+    if (!open) return
+    this.relaySeen = true
+    this.markHostReady()
+  }
+
+  private onTransportFailure(_strategy: StrategyName, error: string): void {
+    if (!isIceFailure(error)) return
+    this.iceFailed = true
+    const { status } = this.snapshot
+    if (status === 'rejected' || status === 'notFound' || status === 'offline') return
+    this.update({ message: ICE_MESSAGE })
+  }
+}
+
+/** Arma una sesión sobre un transporte falso. Sirve para probar el protocolo sin WebRTC. */
+export function createTestSession(role: 'host' | 'client', code: string, name: string, link: Link): Session {
+  return Session.openForTest(role, code, name, link)
 }
