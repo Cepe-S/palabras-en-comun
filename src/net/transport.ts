@@ -2,6 +2,7 @@ import type { Room, TurnServerConfig } from '@trystero-p2p/nostr'
 import { installNetDebug, netLog, readyName } from './debug'
 import { sendViaRoutes } from './route'
 import { loadTurnConfig, NOSTR_RELAYS } from './turn'
+import { resolvePeerConnection } from './webrtc'
 
 export const APP_ID = 'palabras-en-comun-v1'
 export type StrategyName = 'nostr' | 'torrent'
@@ -156,13 +157,16 @@ export class Transport implements Link {
   }
 
   private attach(name: StrategyName, mod: StrategyModule, turnConfig: TurnServerConfig[] | undefined): void {
-    const rtcPolyfill = globalThis.RTCPeerConnection
-    if (typeof rtcPolyfill !== 'function') {
-      const error = 'RTCPeerConnection is not a constructor'
-      netLog('webrtc', { strategy: name, type: typeof rtcPolyfill })
-      this.onFailure(name, error)
+    const rtcPolyfill = resolvePeerConnection()
+    if (!rtcPolyfill) {
+      netLog('webrtc', { strategy: name, type: typeof globalThis.RTCPeerConnection, source: 'missing' })
+      this.onFailure(name, 'RTCPeerConnection is not a constructor')
       return
     }
+    netLog('webrtc', {
+      strategy: name,
+      source: rtcPolyfill === globalThis.RTCPeerConnection ? 'window' : 'iframe',
+    })
     const room = mod.joinRoom(
       {
         appId: APP_ID,

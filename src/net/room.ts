@@ -39,6 +39,8 @@ export type Status = 'connecting' | 'connected' | 'hostLost' | 'rejected' | 'not
 export const PUBLISHING_MESSAGE = 'Publicando la sala…'
 export const ICE_MESSAGE =
   'Tu red bloqueó la conexión directa entre navegadores. Si estás con datos móviles o en una red restringida, probá con Wi-Fi.'
+export const WEBRTC_MESSAGE =
+  'Este navegador no tiene WebRTC, así que no puede conectar la partida. Desactivá la extensión que lo bloquea o activalo en la configuración del navegador.'
 export const OFFLINE_MESSAGE = 'No pudimos contactar a los relays de conexión. Probá con otra red o más tarde.'
 export const NOT_FOUND_MESSAGE =
   'No encontramos esa sala. Revisá el código o pedile al anfitrión que la vuelva a abrir.'
@@ -62,8 +64,12 @@ export interface Snapshot {
   strategies: string[]
 }
 
+export function isWebRtcMissing(error: string): boolean {
+  return /RTCPeerConnection is not a constructor/i.test(error)
+}
+
 export function isIceFailure(error: string): boolean {
-  return /could not connect to peer|TURN|ICE|exchanging SDP|RTCPeerConnection/i.test(error)
+  return !isWebRtcMissing(error) && /could not connect to peer|TURN|ICE|exchanging SDP/i.test(error)
 }
 
 /**
@@ -176,6 +182,7 @@ export class Session {
   private relaySeen = false
   private iceFailed = false
   private iceFailures = new Set<StrategyName>()
+  private webRtcMissing = false
 
   private constructor(role: 'host' | 'client', code: string, name: string, game?: GameState, link?: Link) {
     const playerId = getPlayerId()
@@ -287,7 +294,7 @@ export class Session {
   private markHostReady(): void {
     if (!this.snapshot.isHost || this.snapshot.status !== 'connecting') return
     // La sala ya está publicada. Un intento fallido contra un par no significa que la red esté bloqueada.
-    this.update({ status: 'connected', message: null })
+    this.update({ status: 'connected', message: this.webRtcMissing ? WEBRTC_MESSAGE : null })
   }
 
   /* ---------- Anfitrión ---------- */
@@ -410,7 +417,7 @@ export class Session {
 
   private checkLink(): void {
     const { status, state } = this.snapshot
-    if (status === 'rejected' || status === 'notFound' || status === 'offline') return
+    if (this.webRtcMissing || status === 'rejected' || status === 'notFound' || status === 'offline') return
     const diagnosis = diagnoseSilence({
       elapsedMs: Date.now() - this.startedAt,
       relaySeen: this.relaySeen,
@@ -506,6 +513,11 @@ export class Session {
 
   private onTransportFailure(strategy: StrategyName, error: string): void {
     netLog('failure', { strategy, error, ice: isIceFailure(error) })
+    if (isWebRtcMissing(error)) {
+      this.webRtcMissing = true
+      this.update({ message: WEBRTC_MESSAGE })
+      return
+    }
     if (!isIceFailure(error)) return
     this.iceFailed = true
     this.iceFailures.add(strategy)

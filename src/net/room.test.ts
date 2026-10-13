@@ -6,7 +6,9 @@ import {
   GIVE_UP_MS,
   ICE_MESSAGE,
   isIceFailure,
+  isWebRtcMissing,
   PUBLISHING_MESSAGE,
+  WEBRTC_MESSAGE,
   type Session,
 } from './room'
 import type { Link, StrategyName } from './transport'
@@ -78,8 +80,9 @@ describe('diagnoseSilence', () => {
     expect(diagnoseSilence({ elapsedMs: GIVE_UP_MS, relaySeen: true, iceFailed: true })).toBe('ice')
   })
 
-  it('crear el canal sin WebRTC también cuenta como fallo de conexión', () => {
-    expect(isIceFailure('RTCPeerConnection is not a constructor')).toBe(true)
+  it('sin WebRTC no se confunde con un bloqueo de red', () => {
+    expect(isWebRtcMissing('RTCPeerConnection is not a constructor')).toBe(true)
+    expect(isIceFailure('RTCPeerConnection is not a constructor')).toBe(false)
   })
 })
 
@@ -139,6 +142,16 @@ describe('sesión con transporte falso', () => {
 
     link.leavePeer('peer-b')
     expect(bobs()).toHaveLength(0)
+  })
+
+  it('si el navegador no tiene WebRTC, el aviso lo dice y no habla de la red', () => {
+    const link = new FakeLink()
+    session = createTestSession('host', 'ABCDE', 'Ana', link)
+    link.fail('nostr', 'RTCPeerConnection is not a constructor')
+    expect(session.snapshot.message).toBe(WEBRTC_MESSAGE)
+    link.relay(true)
+    expect(session.snapshot.status).toBe('connected')
+    expect(session.snapshot.message).toBe(WEBRTC_MESSAGE)
   })
 
   it('un solo canal fallido no anuncia que la red está bloqueada', () => {
