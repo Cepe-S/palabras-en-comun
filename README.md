@@ -55,3 +55,7 @@ Para probarlo solo, abrí varias pestañas: cada pestaña es un jugador distinto
 - Los relays públicos pueden caerse temporalmente, y algunas redes (corporativas, NAT estricto)
   bloquean WebRTC sin servidor TURN. En ese caso probá con otra red o con datos móviles.
 - Se recomienda un máximo de 8 jugadores por sala por el rendimiento de la malla P2P.
+
+## Altura mínima en celulares
+
+Con ancho 360 px, todas las pantallas de juego (inicio, sala, palabra, escritura, revelado) entran sin scroll desde **~580 px** de alto. El resumen de ronda y el final (tablas con todos los jugadores) pueden necesitar scroll en pantallas de menos de ~620–900 px según la cantidad de jugadores.

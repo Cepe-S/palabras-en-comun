@@ -212,6 +212,7 @@ describe('sesión con transporte falso', () => {
 
 function lobbyState(): PublicState {
   return {
+    roomName: 'Sala de Ana',
     phase: 'lobby',
     round: 1,
     totalRounds: 3,
@@ -223,6 +224,7 @@ function lobbyState(): PublicState {
     steps: [],
     totalSteps: 0,
     history: {},
-    roundPoints: {},
+    wordCounts: {},
+  roundPoints: {},
   }
 }

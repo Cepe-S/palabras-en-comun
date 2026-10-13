@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useState } from 'preact/hooks'
 import type { Player, RevealStep, WordStep } from '../game/types'
-import type { Session, Snapshot } from '../net/room'
+import type { SessionLike, Snapshot } from '../net/room'
 import { playerById } from './derive'
 import { PlayerToken } from './PlayerToken'
 import { WordCard } from './WordCard'
@@ -12,7 +12,7 @@ const AUTO_DWELL_MS = 2200
 
 interface Props {
   snap: Snapshot
-  session: Session
+  session: SessionLike
   onHold: (hold: boolean) => void
 }
 
@@ -191,7 +191,7 @@ export function RevealPhase({ snap, session, onHold }: Props) {
               </label>
             )}
             <button class="btn btn--ghost" type="button" onClick={() => session.act({ type: 'skipReveal' })}>
-              Saltar al resumen
+              Saltar<span class="hide-sm"> al resumen</span>
             </button>
           </div>
         ) : (
@@ -202,7 +202,7 @@ export function RevealPhase({ snap, session, onHold }: Props) {
       </section>
 
       {log.length > 0 && turnOwner && (
-        <section class="card card--flat log">
+        <section class="card card--flat log reveal-log">
           <h3 class="card__title" style="margin:0">
             Palabras de {turnOwner.name}
           </h3>

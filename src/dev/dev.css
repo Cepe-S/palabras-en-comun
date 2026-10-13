@@ -1,0 +1,119 @@
+/* Solo desarrollo: estilos del DevHUD (se importa desde DevHUD.tsx). */
+.devhud-fab,
+.devhud {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  z-index: 1000;
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #e8e8e8;
+}
+
+.devhud-fab {
+  padding: 8px 12px;
+  border: 2px solid #111;
+  border-radius: 8px;
+  background: #1f2937;
+  color: #7dd3fc;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.devhud {
+  width: min(340px, calc(100vw - 24px));
+  max-height: min(80vh, 640px);
+  display: flex;
+  flex-direction: column;
+  border: 2px solid #111;
+  border-radius: 10px;
+  background: #111827;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.devhud__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #374151;
+}
+
+.devhud__current {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #9ca3af;
+}
+
+.devhud__body {
+  overflow-y: auto;
+  padding: 8px 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.devhud h4 {
+  margin: 0 0 4px;
+  color: #7dd3fc;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.devhud__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.devhud__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.devhud button,
+.devhud select {
+  padding: 5px 8px;
+  border: 1px solid #4b5563;
+  border-radius: 6px;
+  background: #1f2937;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.devhud button:hover {
+  background: #374151;
+}
+
+.devhud button.is-on {
+  border-color: #7dd3fc;
+  color: #7dd3fc;
+}
+
+.devhud textarea {
+  width: 100%;
+  padding: 6px;
+  border: 1px solid #4b5563;
+  border-radius: 6px;
+  background: #0b1220;
+  color: #d1fae5;
+  font: inherit;
+  resize: vertical;
+}
+
+.devhud__error {
+  margin: 4px 0 0;
+  color: #fca5a5;
+}
+
+.devhud__exit {
+  border-color: #f87171 !important;
+  color: #fca5a5 !important;
+}

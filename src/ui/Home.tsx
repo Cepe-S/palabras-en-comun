@@ -1,42 +1,26 @@
 import { useState } from 'preact/hooks'
+import { resolveRoomName } from '../game/engine'
+import { MAX_NAME_LENGTH, MAX_ROOM_NAME_LENGTH } from '../game/types'
 import { normalizeCode, type SavedSession } from '../net/room'
+import { Help } from './Help'
 import { Logo } from './Shell'
 
 interface Props {
   initialCode: string | null
   saved: SavedSession | null
-  onHost: (name: string) => void
+  onHost: (name: string, roomName: string) => void
   onJoin: (code: string, name: string) => void
   onResume: () => void
   onForget: () => void
+  /** Solo desarrollo (DevHUD): abre la ventana de reglas al montar. */
+  devOpenRules?: boolean
 }
 
 const NAME_KEY = 'pec.name'
 
-export function Rules({ wide = false }: { wide?: boolean }) {
-  const items = [
-    ['Palabra', 'Se sortea una palabra para la ronda.'],
-    ['Escribí', 'Tenés 1 minuto y 30 para anotar 8 palabras relacionadas.'],
-    ['Coincidí', 'Cada palabra vale tantos puntos como jugadores la escribieron. Si nadie más la puso, vale 0.'],
-    ['Suspenso', 'Se revelan las palabras jugador por jugador. Gana quien sume más tras 3 rondas.'],
-  ]
-  return (
-    <div class={`rules ${wide ? 'rules--wide' : ''}`}>
-      {items.map(([title, text], i) => (
-        <div class="rule" key={title}>
-          <span class="rule__n">{i + 1}</span>
-          <div>
-            <b>{title}</b>
-            <p>{text}</p>
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-export function Home({ initialCode, saved, onHost, onJoin, onResume, onForget }: Props) {
+export function Home({ initialCode, saved, onHost, onJoin, onResume, onForget, devOpenRules }: Props) {
   const [name, setName] = useState(() => localStorage.getItem(NAME_KEY) ?? '')
+  const [roomName, setRoomName] = useState('')
   const [code, setCode] = useState(initialCode ?? '')
   const [error, setError] = useState('')
 
@@ -52,7 +36,7 @@ export function Home({ initialCode, saved, onHost, onJoin, onResume, onForget }:
   }
 
   const host = () => {
-    if (validName()) onHost(cleanName)
+    if (validName()) onHost(cleanName, resolveRoomName(roomName, cleanName))
   }
 
   const join = (e: Event) => {
@@ -67,13 +51,12 @@ export function Home({ initialCode, saved, onHost, onJoin, onResume, onForget }:
 
   return (
     <div class="app">
+      <Help floating defaultOpen={devOpenRules} />
       <div class="home stack" style="gap:20px">
         <div class="hero">
           <div class="row row--center" style="margin-bottom:12px">
             <Logo />
           </div>
-          <h1>¿En qué pensamos?</h1>
-          <p>Escribí palabras relacionadas y coincidí con tus amigos. ¡Cuantos más coincidan, más puntos!</p>
         </div>
 
         {saved && (
@@ -102,7 +85,7 @@ export function Home({ initialCode, saved, onHost, onJoin, onResume, onForget }:
             <input
               class="input"
               value={name}
-              maxLength={16}
+              maxLength={MAX_NAME_LENGTH}
               placeholder="Ej: Sofi"
               autocomplete="nickname"
               onInput={(e) => {
@@ -117,12 +100,6 @@ export function Home({ initialCode, saved, onHost, onJoin, onResume, onForget }:
               {error}
             </p>
           )}
-
-          <button class="btn btn--primary btn--big" type="button" onClick={host}>
-            Crear sala nueva
-          </button>
-
-          <div class="divider">o unite a una</div>
 
           <form class="stack" onSubmit={join}>
             <label class="field">
@@ -141,18 +118,29 @@ export function Home({ initialCode, saved, onHost, onJoin, onResume, onForget }:
                 }}
               />
             </label>
-            <button class="btn btn--big" type="submit">
+            <button class="btn btn--primary btn--big" type="submit">
               Unirme
             </button>
           </form>
+
+          <div class="divider">o creá una sala nueva</div>
+
+          <label class="field">
+            <span class="field__label">Nombre de la sala (opcional)</span>
+            <input
+              class="input"
+              value={roomName}
+              maxLength={MAX_ROOM_NAME_LENGTH}
+              placeholder={resolveRoomName('', cleanName || 'tu nombre')}
+              onInput={(e) => setRoomName((e.target as HTMLInputElement).value)}
+            />
+          </label>
+
+          <button class="btn btn--big" type="button" onClick={host}>
+            Crear sala nueva
+          </button>
         </div>
 
-        <div class="card card--flat stack">
-          <h2 class="card__title" style="margin:0">
-            Cómo se juega
-          </h2>
-          <Rules />
-        </div>
       </div>
     </div>
   )

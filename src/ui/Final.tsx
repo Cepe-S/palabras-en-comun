@@ -1,6 +1,6 @@
 import { totalScore, winners } from '../game/engine'
 import { TOTAL_ROUNDS } from '../game/types'
-import type { Session, Snapshot } from '../net/room'
+import type { SessionLike, Snapshot } from '../net/room'
 import { PlayerToken } from './PlayerToken'
 
 const CONFETTI_COLORS = ['var(--p0)', 'var(--p1)', 'var(--p2)', 'var(--p3)', 'var(--p4)', 'var(--p5)']
@@ -18,7 +18,7 @@ function Confetti() {
   )
 }
 
-export function Final({ snap, session, onLeave }: { snap: Snapshot; session: Session; onLeave: () => void }) {
+export function Final({ snap, session, onLeave }: { snap: Snapshot; session: SessionLike; onLeave: () => void }) {
   const state = snap.state!
   const winnerIds = winners(state.players, state.history)
   const top = state.players.filter((p) => winnerIds.includes(p.id))

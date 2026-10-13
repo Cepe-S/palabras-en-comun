@@ -1,10 +1,13 @@
+import { useState } from 'preact/hooks'
 import { totalScore } from '../game/engine'
-import type { Session, Snapshot } from '../net/room'
+import type { SessionLike, Snapshot } from '../net/room'
 import { playerById, roundWordsByPlayer } from './derive'
 import { PlayerToken } from './PlayerToken'
 
-export function RoundSummary({ snap, session }: { snap: Snapshot; session: Session }) {
+export function RoundSummary({ snap, session }: { snap: Snapshot; session: SessionLike }) {
   const state = snap.state!
+  // En celulares la lista de palabras arranca cerrada para no obligar a hacer scroll.
+  const [wide] = useState(() => window.matchMedia('(min-width: 600px)').matches)
   const words = roundWordsByPlayer(state.steps)
   const lastRound = state.round >= state.totalRounds
   const rows = state.players
@@ -63,10 +66,8 @@ export function RoundSummary({ snap, session }: { snap: Snapshot; session: Sessi
         )}
       </section>
 
-      <section class="card card--flat stack">
-        <h3 class="card__title" style="margin:0">
-          Todas las palabras
-        </h3>
+      <details class="card card--flat words-details" open={wide}>
+        <summary class="card__title">Todas las palabras</summary>
         <div>
           {state.players.map((p) => {
             const list = words[p.id] ?? []
@@ -89,7 +90,7 @@ export function RoundSummary({ snap, session }: { snap: Snapshot; session: Sessi
             )
           })}
         </div>
-      </section>
+      </details>
     </>
   )
 }

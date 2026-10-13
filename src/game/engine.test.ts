@@ -13,7 +13,7 @@ import {
   totalScore,
   winners,
 } from './engine'
-import type { Action, Ctx, GameState } from './types'
+import { DRAW_MS, type Action, type Ctx, type GameState } from './types'
 
 const ctx = (now = 0): Ctx => ({ now, random: () => 0 })
 
@@ -28,6 +28,18 @@ function lobby(...names: string[]): GameState {
   })
   return s
 }
+
+describe('nombre de sala', () => {
+  it('usa "Sala de <nombre>" si no se elige uno', () => {
+    expect(createGame('h', 'Ana').roomName).toBe('Sala de Ana')
+    expect(createGame('h', 'Ana', '   ').roomName).toBe('Sala de Ana')
+  })
+  it('respeta el nombre elegido y lo expone en la vista pública', () => {
+    const g = createGame('h', 'Ana', '  Los   Cracks ')
+    expect(g.roomName).toBe('Los Cracks')
+    expect(toPublic(g, 0).roomName).toBe('Los Cracks')
+  })
+})
 
 describe('normalize', () => {
   it('ignora mayúsculas, tildes y espacios', () => {
@@ -109,16 +121,14 @@ describe('flujo de partida', () => {
   it('solo el anfitrión controla las fases', () => {
     const s0 = lobby('Ana', 'Beto')
     expect(run(s0, { type: 'start', by: 'p1' }).phase).toBe('lobby')
-    expect(run(s0, { type: 'start', by: 'host' }).phase).toBe('word')
+    expect(run(s0, { type: 'start', by: 'host' }).phase).toBe('writing')
   })
 
   it('juega 3 rondas completas y calcula el ganador', () => {
     let s = run(lobby('Ana', 'Beto', 'Cami'), { type: 'start', by: 'host' })
     for (let round = 1; round <= 3; round++) {
-      expect(s.phase).toBe('word')
-      expect(s.round).toBe(round)
-      s = run(s, { type: 'begin', by: 'host' })
       expect(s.phase).toBe('writing')
+      expect(s.round).toBe(round)
       s = run(
         s,
         { type: 'words', id: 'host', words: ['uno', 'dos'], ready: true },
@@ -139,15 +149,14 @@ describe('flujo de partida', () => {
   })
 
   it('termina la escritura al vencer el tiempo (con margen)', () => {
-    let s = run(lobby('Ana', 'Beto'), { type: 'start', by: 'host' })
-    s = reduce(s, { type: 'begin', by: 'host' }, ctx(1000))
-    expect(s.endsAt).toBe(1000 + 90_000)
-    expect(reduce(s, { type: 'tick' }, ctx(91_000)).phase).toBe('writing')
-    expect(reduce(s, { type: 'tick' }, ctx(93_000)).phase).toBe('reveal')
+    let s = reduce(lobby('Ana', 'Beto'), { type: 'start', by: 'host' }, ctx(1000))
+    expect(s.endsAt).toBe(1000 + 90_000 + DRAW_MS)
+    expect(reduce(s, { type: 'tick' }, ctx(91_000 + DRAW_MS)).phase).toBe('writing')
+    expect(reduce(s, { type: 'tick' }, ctx(93_000 + DRAW_MS)).phase).toBe('reveal')
   })
 
   it('no cuenta a los desconectados para cerrar la escritura', () => {
-    let s = run(lobby('Ana', 'Beto'), { type: 'start', by: 'host' }, { type: 'begin', by: 'host' })
+    let s = run(lobby('Ana', 'Beto'), { type: 'start', by: 'host' })
     s = run(s, { type: 'words', id: 'host', words: ['x'], ready: true })
     expect(s.phase).toBe('writing')
     s = run(s, { type: 'disconnect', id: 'p1' })
@@ -155,7 +164,7 @@ describe('flujo de partida', () => {
   })
 
   it('la vista pública no filtra palabras ocultas', () => {
-    let s = run(lobby('Ana', 'Beto'), { type: 'start', by: 'host' }, { type: 'begin', by: 'host' })
+    let s = run(lobby('Ana', 'Beto'), { type: 'start', by: 'host' })
     s = run(s, { type: 'words', id: 'host', words: ['secreta'], ready: true })
     expect(JSON.stringify(toPublic(s, 0))).not.toContain('secreta')
   })
@@ -172,8 +181,10 @@ describe('flujo de partida', () => {
   it('no repite la palabra de la ronda dentro de una partida', () => {
     let s = run(lobby('Ana', 'Beto'), { type: 'start', by: 'host' })
     const seen = new Set([s.word])
-    for (let i = 0; i < 5; i++) {
-      s = run(s, { type: 'reroll', by: 'host' })
+    for (let i = 0; i < 2; i++) {
+      s = run(s, { type: 'skipReveal', by: 'host' })
+      s = reduce(s, { type: 'tick' }, ctx(1e12))
+      s = run(s, { type: 'skipReveal', by: 'host' }, { type: 'next', by: 'host' })
       expect(seen.has(s.word)).toBe(false)
       seen.add(s.word)
     }

@@ -15,8 +15,6 @@ type HostMsg =
 /** Acciones que dispara la interfaz; el id del jugador lo completa la sesión. */
 export type UiAction =
   | { type: 'start' }
-  | { type: 'reroll' }
-  | { type: 'begin' }
   | { type: 'words'; words: string[]; ready?: boolean }
   | { type: 'next' }
   | { type: 'skipReveal' }
@@ -24,8 +22,6 @@ export type UiAction =
 
 const ALLOWED: UiAction['type'][] = [
   'start',
-  'reroll',
-  'begin',
   'words',
   'next',
   'skipReveal',
@@ -164,7 +160,21 @@ const HOST_TIMEOUT_MS = 45_000
 
 type Listener = (snap: Snapshot) => void
 
-export class Session {
+/**
+ * Lo mínimo que necesita la interfaz de una sesión. Permite sustituir la sesión real
+ * por una simulada (ver `src/dev/MockSession.ts`) sin tocar las pantallas.
+ */
+export interface SessionLike {
+  readonly snapshot: Snapshot
+  subscribe(listener: (snap: Snapshot) => void): () => void
+  /** Hora actual alineada con el reloj del anfitrión. */
+  now(): number
+  act(action: UiAction): void
+  leave(): void
+  close(): void
+}
+
+export class Session implements SessionLike {
   snapshot: Snapshot
   private listeners = new Set<Listener>()
   private transport: Link
@@ -184,7 +194,17 @@ export class Session {
   private iceFailures = new Set<StrategyName>()
   private webRtcMissing = false
 
-  private constructor(role: 'host' | 'client', code: string, name: string, game?: GameState, link?: Link) {
+  private roomName: string | undefined
+
+  private constructor(
+    role: 'host' | 'client',
+    code: string,
+    name: string,
+    game?: GameState,
+    link?: Link,
+    roomName?: string,
+  ) {
+    this.roomName = roomName
     const playerId = getPlayerId()
     this.snapshot = {
       status: 'connecting',
@@ -211,8 +231,8 @@ export class Session {
     this.timers.push(setInterval(() => this.checkLink(), 2000))
   }
 
-  static host(name: string, resume?: SavedSession): Session {
-    return new Session('host', resume?.code ?? generateCode(), name, resume?.game)
+  static host(name: string, roomName?: string, resume?: SavedSession): Session {
+    return new Session('host', resume?.code ?? generateCode(), name, resume?.game, undefined, roomName)
   }
 
   static join(code: string, name: string): Session {
@@ -221,7 +241,7 @@ export class Session {
 
   static resume(saved: SavedSession): Session {
     return saved.role === 'host'
-      ? Session.host(saved.name, saved)
+      ? Session.host(saved.name, undefined, saved)
       : Session.join(saved.code, saved.name)
   }
 
@@ -301,7 +321,7 @@ export class Session {
 
   private startHost(resume?: GameState): void {
     const { playerId, name, code } = this.snapshot
-    let game = resume ?? createGame(playerId, name)
+    let game = resume ?? createGame(playerId, name, this.roomName)
     if (resume) {
       // Tras recargar, todos quedan desconectados hasta que vuelvan a saludar.
       game = {

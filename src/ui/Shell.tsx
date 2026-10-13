@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact'
 import { useState } from 'preact/hooks'
 import { roomLink, type Snapshot } from '../net/room'
+import { Help } from './Help'
 import { Scoreboard } from './Scoreboard'
 import { Stepper } from './Stepper'
 
@@ -20,7 +21,7 @@ export function Logo() {
         <i class="c1" style="background:var(--p1)" />
         <i class="c2" style="background:var(--p2)" />
       </span>
-      Palabras en común
+      <span class="logo__text">Palabras en común</span>
     </div>
   )
 }
@@ -55,8 +56,16 @@ export function Shell({ snap, hold, onLeave, onRetry, children }: Props) {
         <Logo />
         <div class="topbar__right">
           <button class="pill pill--code" type="button" onClick={copy} title="Copiar enlace de invitación">
-            {copied ? '¡Enlace copiado!' : `Sala ${snap.code}`}
+            {copied ? (
+              '¡Enlace copiado!'
+            ) : (
+              <>
+                {state?.roomName && <span class="pill__name">{state.roomName} · </span>}
+                {snap.code}
+              </>
+            )}
           </button>
+          <Help />
           <button class="btn btn--ghost" type="button" onClick={leave}>
             Salir
           </button>
@@ -82,10 +91,10 @@ export function Shell({ snap, hold, onLeave, onRetry, children }: Props) {
         </div>
       )}
 
-      <main class={`layout ${showSide ? 'layout--with-side' : ''}`}>
+      <main class={`layout ${showSide ? 'layout--with-side' : ''} ${state?.phase === 'lobby' ? 'layout--lobby' : ''}`}>
         <div class="stage">{children}</div>
         {showSide && state && (
-          <aside>
+          <aside class="side">
             <Scoreboard state={state} myId={snap.playerId} hold={hold} />
           </aside>
         )}

@@ -1,13 +1,19 @@
 export const TOTAL_ROUNDS = 3
 export const WORDS_PER_PLAYER = 8
 export const WRITING_SECONDS = 90
+/** Sorteo animado de la palabra antes de que arranque el cronómetro (ms). */
+export const DRAW_SPIN_MS = 3400
+export const DRAW_LANDED_MS = 4700
+export const DRAW_MS = 5700
 export const MIN_PLAYERS = 2
 export const MAX_PLAYERS = 8
 export const MAX_WORD_LENGTH = 28
+export const MAX_NAME_LENGTH = 14
+export const MAX_ROOM_NAME_LENGTH = 30
 /** Margen extra (ms) tras `endsAt` para recibir las últimas palabras de los clientes. */
 export const WRITING_GRACE_MS = 1500
 
-export type Phase = 'lobby' | 'word' | 'writing' | 'reveal' | 'roundSummary' | 'final'
+export type Phase = 'lobby' | 'writing' | 'reveal' | 'roundSummary' | 'final'
 
 export interface Player {
   id: string
@@ -51,6 +57,7 @@ export type RevealStep = TurnStep | WordStep
 
 /** Estado completo, solo vive en el anfitrión. */
 export interface GameState {
+  roomName: string
   phase: Phase
   round: number
   hostId: string
@@ -67,6 +74,7 @@ export interface GameState {
 
 /** Lo que se envía a todos los jugadores (sin palabras ocultas). */
 export interface PublicState {
+  roomName: string
   phase: Phase
   round: number
   totalRounds: number
@@ -80,6 +88,8 @@ export interface PublicState {
   steps: RevealStep[]
   totalSteps: number
   history: Record<string, number[]>
+  /** Cantidad de palabras que lleva cada jugador en la escritura (sin revelar cuáles). */
+  wordCounts: Record<string, number>
   /** Puntos de la ronda actual, según lo revelado hasta ahora. */
   roundPoints: Record<string, number>
 }
@@ -88,8 +98,6 @@ export type Action =
   | { type: 'join'; id: string; name: string }
   | { type: 'disconnect'; id: string }
   | { type: 'start'; by: string }
-  | { type: 'reroll'; by: string }
-  | { type: 'begin'; by: string }
   | { type: 'words'; id: string; words: string[]; ready?: boolean }
   | { type: 'tick' }
   | { type: 'next'; by: string }

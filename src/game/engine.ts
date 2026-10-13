@@ -1,6 +1,9 @@
 import { WORDS } from '../data/words'
 import {
   MAX_PLAYERS,
+  DRAW_MS,
+  MAX_NAME_LENGTH,
+  MAX_ROOM_NAME_LENGTH,
   MAX_WORD_LENGTH,
   MIN_PLAYERS,
   TOTAL_ROUNDS,
@@ -154,8 +157,15 @@ export function winners(players: Player[], history: Record<string, number[]>): s
 
 /* ---------- Estado ---------- */
 
-export function createGame(hostId: string, hostName: string): GameState {
+/** Nombre de sala: el elegido o, si está vacío, "Sala de <anfitrión>". */
+export function resolveRoomName(roomName: string | undefined, hostName: string): string {
+  const clean = cleanWord(roomName ?? '').slice(0, MAX_ROOM_NAME_LENGTH)
+  return clean || `Sala de ${cleanWord(hostName).slice(0, MAX_NAME_LENGTH)}`
+}
+
+export function createGame(hostId: string, hostName: string, roomName?: string): GameState {
   const state: GameState = {
+    roomName: resolveRoomName(roomName, hostName),
     phase: 'lobby',
     round: 0,
     hostId,
@@ -178,7 +188,7 @@ function freeColor(players: Player[]): number {
 }
 
 function uniqueName(players: Player[], name: string): string {
-  const base = cleanWord(name).slice(0, 16) || 'Jugador'
+  const base = cleanWord(name).slice(0, MAX_NAME_LENGTH) || 'Jugador'
   let candidate = base
   let n = 2
   while (players.some((p) => normalize(p.name) === normalize(candidate))) {
@@ -209,13 +219,14 @@ function pickWord(state: GameState, ctx: Ctx): GameState {
   return { ...state, word, usedWords: [...used, word] }
 }
 
+// La palabra se muestra y el cronómetro arranca en el mismo instante para todos.
 function startWordPhase(state: GameState, ctx: Ctx, round: number): GameState {
   return pickWord(
     {
       ...state,
-      phase: 'word',
+      phase: 'writing',
       round,
-      endsAt: null,
+      endsAt: ctx.now + DRAW_MS + WRITING_SECONDS * 1000,
       submissions: {},
       queue: [],
       cursor: 0,
@@ -287,16 +298,6 @@ export function reduce(state: GameState, action: Action, ctx: Ctx): GameState {
       return startWordPhase({ ...state, history: {}, usedWords: [] }, ctx, 1)
     }
 
-    case 'reroll': {
-      if (state.phase !== 'word' || !isHost(action.by)) return state
-      return pickWord(state, ctx)
-    }
-
-    case 'begin': {
-      if (state.phase !== 'word' || !isHost(action.by)) return state
-      return { ...state, phase: 'writing', endsAt: ctx.now + WRITING_SECONDS * 1000 }
-    }
-
     case 'words': {
       if (state.phase !== 'writing') return state
       if (!state.players.some((p) => p.id === action.id)) return state
@@ -364,6 +365,7 @@ export function reduce(state: GameState, action: Action, ctx: Ctx): GameState {
 export function toPublic(state: GameState, now: number): PublicState {
   const steps = state.queue.slice(0, state.cursor)
   return {
+    roomName: state.roomName,
     phase: state.phase,
     round: state.round,
     totalRounds: TOTAL_ROUNDS,
@@ -375,6 +377,10 @@ export function toPublic(state: GameState, now: number): PublicState {
     steps,
     totalSteps: state.queue.length,
     history: state.history,
+    wordCounts:
+      state.phase === 'writing'
+        ? Object.fromEntries(Object.entries(state.submissions).map(([id, w]) => [id, w.length]))
+        : {},
     roundPoints: sumPoints(steps),
   }
 }
