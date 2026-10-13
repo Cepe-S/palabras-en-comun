@@ -141,12 +141,34 @@ describe('sesión con transporte falso', () => {
     expect(bobs()).toHaveLength(0)
   })
 
-  it('un error de ICE deja al invitado buscando y explica la red', () => {
+  it('un solo canal fallido no anuncia que la red está bloqueada', () => {
     const link = new FakeLink()
     session = createTestSession('client', 'ABCDE', 'Sol', link)
-    link.fail('nostr', 'could not connect to peer abc after exchanging SDP; configure TURN servers')
+    link.fail('torrent', 'could not connect to peer abc after exchanging SDP; configure TURN servers')
+    expect(session.snapshot.status).toBe('connecting')
+    expect(session.snapshot.message).toBeNull()
+  })
+
+  it('si los dos canales fallan, el invitado sigue buscando y ve el aviso', () => {
+    const link = new FakeLink()
+    session = createTestSession('client', 'ABCDE', 'Sol', link)
+    const error = 'could not connect to peer abc after exchanging SDP; configure TURN servers'
+    link.fail('nostr', error)
+    link.fail('torrent', error)
     expect(session.snapshot.status).toBe('connecting')
     expect(session.snapshot.message).toBe(ICE_MESSAGE)
+  })
+
+  it('el anfitrión no se queda con el aviso de red cuando la sala ya está publicada', () => {
+    const link = new FakeLink()
+    session = createTestSession('host', 'ABCDE', 'Ana', link)
+    const error = 'could not connect to peer abc after exchanging SDP; check TURN servers'
+    link.fail('nostr', error)
+    link.fail('torrent', error)
+    expect(session.snapshot.message).toBe(ICE_MESSAGE)
+    link.relay(true)
+    expect(session.snapshot.status).toBe('connected')
+    expect(session.snapshot.message).toBeNull()
   })
 
   it('si la partida ya está conectada, el fallo del otro canal no tapa la mesa', () => {

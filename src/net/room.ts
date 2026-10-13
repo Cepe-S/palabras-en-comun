@@ -175,6 +175,7 @@ export class Session {
   private startedAt = Date.now()
   private relaySeen = false
   private iceFailed = false
+  private iceFailures = new Set<StrategyName>()
 
   private constructor(role: 'host' | 'client', code: string, name: string, game?: GameState, link?: Link) {
     const playerId = getPlayerId()
@@ -285,7 +286,8 @@ export class Session {
 
   private markHostReady(): void {
     if (!this.snapshot.isHost || this.snapshot.status !== 'connecting') return
-    this.update({ status: 'connected', message: this.iceFailed ? this.snapshot.message : null })
+    // La sala ya está publicada. Un intento fallido contra un par no significa que la red esté bloqueada.
+    this.update({ status: 'connected', message: null })
   }
 
   /* ---------- Anfitrión ---------- */
@@ -423,6 +425,7 @@ export class Session {
     if (!state) {
       if (diagnosis === 'notFound') this.update({ status: 'notFound', message: NOT_FOUND_MESSAGE })
       else if (diagnosis === 'offline') this.update({ status: 'offline', message: OFFLINE_MESSAGE })
+      else if (diagnosis === 'ice') this.update({ message: ICE_MESSAGE })
       return
     }
     if (status === 'connected' && Date.now() - this.lastStateAt > HOST_TIMEOUT_MS) {
@@ -505,11 +508,11 @@ export class Session {
     netLog('failure', { strategy, error, ice: isIceFailure(error) })
     if (!isIceFailure(error)) return
     this.iceFailed = true
+    this.iceFailures.add(strategy)
     const { status } = this.snapshot
-    // Si la partida ya anda por el otro canal, un fallo de BitTorrent no es la conexión.
-    if (status === 'connected' || status === 'hostLost' || status === 'rejected' || status === 'notFound' || status === 'offline') {
-      return
-    }
+    // Un solo canal puede fallar mientras el otro todavía conecta. El aviso aparece
+    // cuando los dos fallaron, o al cumplirse el plazo si sigue sin haber partida.
+    if (status !== 'connecting' || this.iceFailures.size < 2) return
     this.update({ message: ICE_MESSAGE })
   }
 }
