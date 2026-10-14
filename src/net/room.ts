@@ -1,7 +1,7 @@
 import { createGame, reduce, toPublic } from '../game/engine'
 import { MAX_PLAYERS, type Action, type GameState, type PublicState } from '../game/types'
 import { netLog } from './debug'
-import { Transport, type Link, type StrategyName } from './transport'
+import { SIGNALING_DOWN, Transport, type Link, type StrategyName } from './transport'
 
 /* ---------- Mensajes ---------- */
 
@@ -37,11 +37,11 @@ export const ICE_MESSAGE =
   'Tu red bloqueó la conexión directa entre navegadores. Si estás con datos móviles o en una red restringida, probá con Wi-Fi.'
 export const WEBRTC_MESSAGE =
   'Este navegador no tiene WebRTC, así que no puede conectar la partida. Desactivá la extensión que lo bloquea o activalo en la configuración del navegador.'
-export const OFFLINE_MESSAGE = 'No pudimos contactar a los relays de conexión. Probá con otra red o más tarde.'
+export const OFFLINE_MESSAGE = 'No pudimos contactar el servicio de conexión. Probá con otra red o más tarde.'
 export const NOT_FOUND_MESSAGE =
   'No encontramos esa sala. Revisá el código o pedile al anfitrión que la vuelva a abrir.'
 
-/** Más que el backoff de un relay limitado (60 s) y que el gathering de ICE. */
+/** Plazo para que ICE encuentre un camino si la red es lenta. La señalización ya no espera relays. */
 export const GIVE_UP_MS = 75_000
 
 export interface Snapshot {
@@ -70,7 +70,7 @@ export function isIceFailure(error: string): boolean {
 
 /**
  * Qué decir cuando pasó el plazo y todavía no hay canal de datos.
- * `notFound` solo si los relays respondieron y nadie intercambió SDP.
+ * `notFound` solo si Firebase respondió y la sala no apareció.
  */
 export function diagnoseSilence(input: {
   elapsedMs: number
@@ -202,7 +202,6 @@ export class Session implements SessionLike {
   private startedAt = Date.now()
   private relaySeen = false
   private iceFailed = false
-  private iceFailures = new Set<StrategyName>()
   private webRtcMissing = false
 
   private roomName: string | undefined
@@ -308,18 +307,15 @@ export class Session implements SessionLike {
   }
 
   private connect(): void {
-    const strategies: StrategyName[] = ['nostr', 'torrent']
-    for (const s of strategies) {
-      this.transport
-        .use(s)
-        .then(() => {
-          if (this.closed) return
-          this.update({ strategies: [...this.transport.strategies] })
-        })
-        .catch((error: unknown) => {
-          netLog('strategy:unhandled', { strategy: s, error: error instanceof Error ? error.message : String(error) })
-        })
-    }
+    this.transport
+      .use('firebase')
+      .then(() => {
+        if (this.closed) return
+        this.update({ strategies: [...this.transport.strategies] })
+      })
+      .catch((error: unknown) => {
+        netLog('strategy:unhandled', { strategy: 'firebase', error: error instanceof Error ? error.message : String(error) })
+      })
   }
 
   private markHostReady(): void {
@@ -544,6 +540,11 @@ export class Session implements SessionLike {
 
   private onTransportFailure(strategy: StrategyName, error: string): void {
     netLog('failure', { strategy, error, ice: isIceFailure(error) })
+    if (error === SIGNALING_DOWN) {
+      if (this.snapshot.isHost) this.update({ message: OFFLINE_MESSAGE })
+      else if (this.snapshot.status === 'connecting') this.update({ status: 'offline', message: OFFLINE_MESSAGE })
+      return
+    }
     if (isWebRtcMissing(error)) {
       this.webRtcMissing = true
       this.update({ message: WEBRTC_MESSAGE })
@@ -551,11 +552,7 @@ export class Session implements SessionLike {
     }
     if (!isIceFailure(error)) return
     this.iceFailed = true
-    this.iceFailures.add(strategy)
-    const { status } = this.snapshot
-    // Un solo canal puede fallar mientras el otro todavía conecta. El aviso aparece
-    // cuando los dos fallaron, o al cumplirse el plazo si sigue sin haber partida.
-    if (status !== 'connecting' || this.iceFailures.size < 2) return
+    if (this.snapshot.status !== 'connecting') return
     this.update({ message: ICE_MESSAGE })
   }
 }

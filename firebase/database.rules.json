@@ -1,0 +1,39 @@
+{
+  "rules": {
+    "rooms": {
+      "$code": {
+        ".read": "$code.matches(/^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{5}$/)",
+        ".write": "$code.matches(/^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{5}$/)",
+        "hostId": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 80"
+        },
+        "createdAt": {
+          ".validate": "newData.isNumber()"
+        },
+        "slots": {
+          "$guest": {
+            "joined": {
+              ".validate": "newData.isNumber()"
+            },
+            "offer": {
+              ".validate": "newData.child('type').val() == 'offer' && newData.child('sdp').isString() && newData.child('sdp').val().length > 0 && newData.child('sdp').val().length < 30000"
+            },
+            "answer": {
+              ".validate": "newData.child('type').val() == 'answer' && newData.child('sdp').isString() && newData.child('sdp').val().length > 0 && newData.child('sdp').val().length < 30000"
+            },
+            "hostIce": {
+              "$id": {
+                ".validate": "newData.child('candidate').isString() && newData.child('candidate').val().length > 0 && newData.child('candidate').val().length < 2000"
+              }
+            },
+            "guestIce": {
+              "$id": {
+                ".validate": "newData.child('candidate').isString() && newData.child('candidate').val().length > 0 && newData.child('candidate').val().length < 2000"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

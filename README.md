@@ -1,9 +1,10 @@
 # Palabras en común
 
 Juego de mesa de asociación de palabras para jugar en el navegador con amigos.
-Es una página 100 % estática: no hay servidor propio. Los jugadores se conectan entre
-sí por WebRTC (peer-to-peer) usando [Trystero](https://github.com/dmotz/trystero), que
-solo usa relays públicos de Nostr y BitTorrent para el "saludo" inicial.
+Es una página estática en GitHub Pages. Los jugadores se saludan por Firebase
+Realtime Database y, en cuanto el enlace queda armado, la partida viaja solo por
+un Data Channel de WebRTC. Si la red no deja un camino directo, se usa el TURN
+de Cloudflare.
 
 ## Cómo se juega
 
@@ -43,8 +44,9 @@ Para probarlo solo, abrí varias pestañas: cada pestaña es un jugador distinto
 ## Arquitectura
 
 - `src/game/engine.ts`: lógica pura y testeada (`reduce`, normalización, puntaje, cola de revelado).
-- `src/net/transport.ts`: Trystero con Nostr y BitTorrent como respaldo (el anfitrión usa ambos;
-  los demás prueban Nostr y suman BitTorrent si no encuentran la sala en unos segundos).
+- `src/net/transport.ts`: señalización en Firebase (oferta, respuesta y candidatos ICE
+  apenas aparecen). Al conectar, esa escucha se corta. El juego sigue por el Data Channel
+  con el anfitrión, que es el único que ofrece.
 - `src/net/room.ts`: sesión. El **anfitrión es la fuente de verdad**: valida acciones, guarda el
   estado y lo envía a todos. Las palabras ocultas nunca se envían antes de revelarse.
 - `src/ui/`: pantallas y componentes de la interfaz.
@@ -53,9 +55,9 @@ Para probarlo solo, abrí varias pestañas: cada pestaña es un jugador distinto
 
 - Si el anfitrión cierra la pestaña, la partida se pausa. Al volver a abrir el sitio puede
   retomarla con "Volver a la partida" (el estado se guarda en la pestaña) y los demás se reconectan solos.
-- Los relays públicos pueden caerse temporalmente, y algunas redes (corporativas, NAT estricto)
-  bloquean WebRTC sin servidor TURN. En ese caso probá con otra red o con datos móviles.
-- Se recomienda un máximo de 8 jugadores por sala por el rendimiento de la malla P2P.
+- Los relays públicos ya no intervienen. Si Firebase no está configurado, o la red bloquea
+  WebRTC y el TURN no responde, la sala no llega a armarse.
+- Se recomienda un máximo de 8 jugadores: el anfitrión mantiene un enlace con cada uno.
 
 ## Altura mínima en celulares
 

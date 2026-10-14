@@ -1,13 +1,11 @@
-import type { TurnServerConfig } from '@trystero-p2p/nostr'
 import { netLog } from './debug'
 
-/** Relays que reenvían eventos. No incluye relay.layer.systems: limita la tasa en el primer publish. */
-export const NOSTR_RELAYS = [
-  'wss://relay.novospes.com',
-  'wss://relay.nostrmap.net',
-  'wss://relay.bitmacro.cloud',
-  'wss://relay.grigic.org',
-]
+/** Servidor TURN que el Worker de Cloudflare devuelve. Solo URLs `turn:` / `turns:`. */
+export interface TurnServerConfig {
+  urls: string | string[]
+  username?: string
+  credential?: string
+}
 
 const BLOCKED_PORT = /:53(?![0-9])/
 

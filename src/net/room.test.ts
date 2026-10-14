@@ -75,7 +75,7 @@ describe('diagnoseSilence', () => {
     expect(diagnoseSilence({ elapsedMs: GIVE_UP_MS, relaySeen: false, iceFailed: false })).toBe('offline')
   })
 
-  it('si los relays respondieron y no hubo SDP, la sala no está', () => {
+  it('si la señalización respondió y no hubo SDP, la sala no está', () => {
     expect(diagnoseSilence({ elapsedMs: GIVE_UP_MS, relaySeen: true, iceFailed: false })).toBe('notFound')
   })
 
@@ -107,15 +107,15 @@ describe('sesión con transporte falso', () => {
     vi.unstubAllGlobals()
   })
 
-  it('anfitrión e invitado abren Nostr y BitTorrent juntos', async () => {
+  it('anfitrión e invitado abren Firebase', async () => {
     const hostLink = new FakeLink()
     const guestLink = new FakeLink()
     session = createTestSession('host', 'ABCDE', 'Ana', hostLink)
     const guest = createTestSession('client', 'ABCDE', 'Sol', guestLink)
     await Promise.resolve()
     await Promise.resolve()
-    expect(hostLink.used).toEqual(['nostr', 'torrent'])
-    expect(guestLink.used).toEqual(['nostr', 'torrent'])
+    expect(hostLink.used).toEqual(['firebase'])
+    expect(guestLink.used).toEqual(['firebase'])
     guest.close()
   })
 
@@ -150,27 +150,17 @@ describe('sesión con transporte falso', () => {
   it('si el navegador no tiene WebRTC, el aviso lo dice y no habla de la red', () => {
     const link = new FakeLink()
     session = createTestSession('host', 'ABCDE', 'Ana', link)
-    link.fail('nostr', 'RTCPeerConnection is not a constructor')
+    link.fail('firebase', 'RTCPeerConnection is not a constructor')
     expect(session.snapshot.message).toBe(WEBRTC_MESSAGE)
     link.relay(true)
     expect(session.snapshot.status).toBe('connected')
     expect(session.snapshot.message).toBe(WEBRTC_MESSAGE)
   })
 
-  it('un solo canal fallido no anuncia que la red está bloqueada', () => {
+  it('si la conexión ICE falla, el invitado sigue buscando y ve el aviso', () => {
     const link = new FakeLink()
     session = createTestSession('client', 'ABCDE', 'Sol', link)
-    link.fail('torrent', 'could not connect to peer abc after exchanging SDP; configure TURN servers')
-    expect(session.snapshot.status).toBe('connecting')
-    expect(session.snapshot.message).toBeNull()
-  })
-
-  it('si los dos canales fallan, el invitado sigue buscando y ve el aviso', () => {
-    const link = new FakeLink()
-    session = createTestSession('client', 'ABCDE', 'Sol', link)
-    const error = 'could not connect to peer abc after exchanging SDP; configure TURN servers'
-    link.fail('nostr', error)
-    link.fail('torrent', error)
+    link.fail('firebase', 'could not connect to peer abc after exchanging SDP; configure TURN servers')
     expect(session.snapshot.status).toBe('connecting')
     expect(session.snapshot.message).toBe(ICE_MESSAGE)
   })
@@ -179,8 +169,7 @@ describe('sesión con transporte falso', () => {
     const link = new FakeLink()
     session = createTestSession('host', 'ABCDE', 'Ana', link)
     const error = 'could not connect to peer abc after exchanging SDP; check TURN servers'
-    link.fail('nostr', error)
-    link.fail('torrent', error)
+    link.fail('firebase', error)
     expect(session.snapshot.message).toBe(ICE_MESSAGE)
     link.relay(true)
     expect(session.snapshot.status).toBe('connected')
@@ -192,7 +181,7 @@ describe('sesión con transporte falso', () => {
     session = createTestSession('client', 'ABCDE', 'Sol', link)
     link.receive('host', JSON.stringify({ t: 'state', state: lobbyState() }))
     expect(session.snapshot.status).toBe('connected')
-    link.fail('torrent', 'could not connect to peer host after exchanging SDP; check that your TURN server URLs and credentials are reachable by both peers')
+    link.fail('firebase', 'could not connect to peer host after exchanging SDP; check that your TURN server URLs and credentials are reachable by both peers')
     expect(session.snapshot.status).toBe('connected')
     expect(session.snapshot.message).toBeNull()
   })

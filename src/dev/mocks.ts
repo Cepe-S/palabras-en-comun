@@ -201,7 +201,7 @@ export const SCENARIOS: Scenario[] = [
     status: 'rejected',
     message: 'La partida ya empezó. Esperá a la próxima.',
   })),
-  session('Conexión', 'offline', 'Sin relays', () => ({
+  session('Conexión', 'offline', 'Sin servicio', () => ({
     game: null,
     status: 'offline',
     message: OFFLINE_MESSAGE,
