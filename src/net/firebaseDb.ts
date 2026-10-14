@@ -15,7 +15,7 @@ export interface FirebasePublicConfig {
 export function readFirebaseConfig(): FirebasePublicConfig | null {
   const env = import.meta.env
   const apiKey = env.VITE_FIREBASE_API_KEY
-  const databaseURL = env.VITE_FIREBASE_DATABASE_URL
+  const databaseURL = env.VITE_FIREBASE_DATABASE_URL?.replace(/\/+$/, '')
   const projectId = env.VITE_FIREBASE_PROJECT_ID
   const appId = env.VITE_FIREBASE_APP_ID
   if (!apiKey || !databaseURL || !projectId || !appId) return null
