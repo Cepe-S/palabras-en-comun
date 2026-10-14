@@ -7,5 +7,7 @@ import '@fontsource/nunito/700.css'
 import '@fontsource/nunito/800.css'
 import './styles.css'
 import { App } from './App'
+import { installButtonSounds } from './audio/buttons'
 
+installButtonSounds()
 render(<App />, document.getElementById('app')!)

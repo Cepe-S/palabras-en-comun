@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
+import { DevSounds } from './DevSounds'
 import { HOST_ID } from './mocks'
 import { MockSession } from './MockSession'
 import { SCENARIOS, type MockOpts, type Scenario } from './mocks'
@@ -171,6 +172,8 @@ export function DevHUD({ active, devView, onView }: DevHudProps) {
             {jsonError && <p class="devhud__error">{jsonError}</p>}
           </section>
         )}
+
+        <DevSounds />
 
         {devView && (
           <button type="button" class="devhud__exit" onClick={() => onView(null)}>

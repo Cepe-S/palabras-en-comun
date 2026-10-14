@@ -1,151 +1,123 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import { addWord } from "../game/engine";
-import { DRAW_MS, WORDS_PER_PLAYER, WRITING_SECONDS } from "../game/types";
-import type { SessionLike, Snapshot } from "../net/room";
-import { DrawIntro, drawStage, type IntroRects } from "./DrawIntro";
-import { useTick } from "./hooks";
-import { Timer } from "./Timer";
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
+import { sfx } from '../audio/engine'
+import { useCountdownSound } from '../audio/useAudio'
+import { addWord } from '../game/engine'
+import { DRAW_MS, WORDS_PER_PLAYER, WRITING_SECONDS } from '../game/types'
+import type { SessionLike, Snapshot } from '../net/room'
+import { DrawIntro, drawStage, type DrawStage } from './DrawIntro'
+import { setDrawStage } from './drawStore'
+import { useTick } from './hooks'
+import { Timer } from './Timer'
 
-const SYNC_DELAY_MS = 350;
+const SYNC_DELAY_MS = 350
 
-export function WritingPhase({
-  snap,
-  session,
-}: {
-  snap: Snapshot;
-  session: SessionLike;
-}) {
-  const state = snap.state!;
-  const me = state.players.find((p) => p.id === snap.playerId);
+export function WritingPhase({ snap, session }: { snap: Snapshot; session: SessionLike }) {
+  const state = snap.state!
+  const me = state.players.find((p) => p.id === snap.playerId)
 
-  const [draft, setDraft] = useState<string[]>(snap.myWords ?? []);
-  const [ready, setReady] = useState(me?.ready ?? false);
-  const [text, setText] = useState("");
-  const [error, setError] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
-  const syncTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
-    undefined,
-  );
-  const touched = useRef(false);
-  const sentFinal = useRef(false);
-  const latest = useRef({ draft, ready });
-  latest.current = { draft, ready };
+  const [draft, setDraft] = useState<string[]>(snap.myWords ?? [])
+  const [ready, setReady] = useState(me?.ready ?? false)
+  const [text, setText] = useState('')
+  const [error, setError] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  const syncTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const touched = useRef(false)
+  const sentFinal = useRef(false)
+  const latest = useRef({ draft, ready })
+  latest.current = { draft, ready }
 
-  useTick(100);
-  const rawRemaining = Math.max(0, (state.endsAt ?? 0) - session.now());
-  const total = WRITING_SECONDS * 1000;
+  useTick(100)
+  const rawRemaining = Math.max(0, (state.endsAt ?? 0) - session.now())
+  const total = WRITING_SECONDS * 1000
   // Los primeros DRAW_MS son el sorteo animado: el cronómetro arranca recién después.
-  const elapsed = DRAW_MS - (rawRemaining - total);
-  const stage = drawStage(elapsed);
-  const intro = stage !== "done";
-  const remaining = Math.min(rawRemaining, total);
-  const timeUp = rawRemaining <= 0;
-  const locked = ready || timeUp || intro;
-
-  const wordRef = useRef<HTMLElement>(null);
-  const timerRef = useRef<HTMLDivElement>(null);
-  const [rects, setRects] = useState<IntroRects | null>(null);
-  useLayoutEffect(() => {
-    if (!intro || !wordRef.current || !timerRef.current) return;
-    const word = wordRef.current.getBoundingClientRect();
-    const timer = timerRef.current.getBoundingClientRect();
-    const wordFont = parseFloat(getComputedStyle(wordRef.current).fontSize);
-    setRects((r) =>
-      r &&
-      r.word.left === word.left &&
-      r.word.top === word.top &&
-      r.word.width === word.width &&
-      r.timer.left === timer.left &&
-      r.timer.top === timer.top
-        ? r
-        : { word, timer, wordFont },
-    );
-  });
+  const startAt = (state.endsAt ?? 0) - total - DRAW_MS
+  const target = drawStage(session.now() - startAt)
+  const stage = useDrawTransition(target)
+  const intro = stage !== 'done'
+  const remaining = Math.min(rawRemaining, total)
+  const timeUp = rawRemaining <= 0
+  const locked = ready || timeUp || intro
+  useCountdownSound(remaining, !intro && !timeUp, timeUp)
 
   const send = (words: string[], isReady?: boolean) => {
-    clearTimeout(syncTimer.current);
-    session.act({ type: "words", words, ready: isReady });
-  };
+    clearTimeout(syncTimer.current)
+    session.act({ type: 'words', words, ready: isReady })
+  }
 
   // Si el anfitrión nos devuelve palabras guardadas (recarga o reconexión), las recuperamos.
   useEffect(() => {
-    if (
-      !touched.current &&
-      snap.myWords?.length &&
-      latest.current.draft.length === 0
-    ) {
-      setDraft(snap.myWords);
+    if (!touched.current && snap.myWords?.length && latest.current.draft.length === 0) {
+      setDraft(snap.myWords)
     }
-  }, [snap.myWords]);
+  }, [snap.myWords])
 
   // Al terminar el tiempo se entrega lo que haya.
   useEffect(() => {
     if (timeUp && !sentFinal.current) {
-      sentFinal.current = true;
-      setReady(true);
-      send(latest.current.draft, true);
+      sentFinal.current = true
+      setReady(true)
+      send(latest.current.draft, true)
     }
-  }, [timeUp]);
+  }, [timeUp])
 
-  useEffect(() => () => clearTimeout(syncTimer.current), []);
+  useEffect(() => () => clearTimeout(syncTimer.current), [])
 
   const change = (next: string[]) => {
-    touched.current = true;
-    setDraft(next);
-    clearTimeout(syncTimer.current);
-    syncTimer.current = setTimeout(
-      () => send(next, latest.current.ready),
-      SYNC_DELAY_MS,
-    );
-  };
+    touched.current = true
+    setDraft(next)
+    clearTimeout(syncTimer.current)
+    syncTimer.current = setTimeout(() => send(next, latest.current.ready), SYNC_DELAY_MS)
+  }
 
   const add = (e: Event) => {
-    e.preventDefault();
-    if (locked) return;
-    const result = addWord(draft, text, state.word);
+    e.preventDefault()
+    if (locked) return
+    const result = addWord(draft, text, state.word)
     if (!result.ok) {
-      setError(result.error);
-      return;
+      setError(result.error)
+      sfx('interfaz/error')
+      return
     }
-    setError("");
-    setText("");
-    change(result.words);
-    inputRef.current?.focus();
-  };
+    // Cada casillero suena un poco más agudo que el anterior.
+    sfx('escritura/agregar-palabra', { rate: 0.9 + result.words.length * 0.05 })
+    if (result.words.length === WORDS_PER_PLAYER) sfx('escritura/ocho-palabras', { delay: 150 })
+    setError('')
+    setText('')
+    change(result.words)
+    inputRef.current?.focus()
+  }
 
   const remove = (index: number) => {
-    if (locked) return;
-    change(draft.filter((_, i) => i !== index));
-    inputRef.current?.focus();
-  };
+    if (locked) return
+    sfx('escritura/quitar-palabra')
+    change(draft.filter((_, i) => i !== index))
+    inputRef.current?.focus()
+  }
 
   const toggleReady = () => {
-    const next = !ready;
-    touched.current = true;
-    setReady(next);
-    send(draft, next);
-  };
+    const next = !ready
+    sfx(next ? 'escritura/listo' : 'escritura/seguir-editando')
+    touched.current = true
+    setReady(next)
+    send(draft, next)
+  }
 
-  const connected = state.players.filter((p) => p.connected);
-  const readyCount = connected.filter((p) =>
-    p.id === snap.playerId ? ready : p.ready,
-  ).length;
+  const connected = state.players.filter((p) => p.connected)
+  const readyCount = connected.filter((p) => (p.id === snap.playerId ? ready : p.ready)).length
 
   return (
     <>
       <section
-        class={`card stack writing ${intro ? (stage === "move" ? "writing--enter" : "writing--hidden") : ""}`}
+        class={`card stack writing ${stage !== 'move' && stage !== 'done' ? 'writing--hidden' : stage === 'move' && !canTransition() ? 'writing--enter' : ''}`}
       >
         <div class="writing__head">
           <div class="writing__word">
             <span class="eyebrow">
               Escribí palabras <span class="hide-sm">relacionadas </span>con
             </span>
-            <strong ref={wordRef} style={intro ? "visibility:hidden" : ""}>
-              {state.word}
-            </strong>
+            <strong class={stage === 'move' ? 'vt-word' : ''}>{state.word}</strong>
           </div>
-          <div ref={timerRef} style={intro ? "visibility:hidden" : ""}>
+          <div class={stage === 'move' ? 'vt-timer' : ''}>
             <Timer remainingMs={remaining} totalMs={total} />
           </div>
         </div>
@@ -155,16 +127,13 @@ export function WritingPhase({
             {draft.length}/{WORDS_PER_PLAYER}
           </span>
           <div class="progress__bar">
-            <div
-              class="progress__fill"
-              style={`width:${(draft.length / WORDS_PER_PLAYER) * 100}%`}
-            />
+            <div class="progress__fill" style={`width:${(draft.length / WORDS_PER_PLAYER) * 100}%`} />
           </div>
         </div>
 
         <ol class="slots" style="list-style:none;margin:0;padding:0">
           {Array.from({ length: WORDS_PER_PLAYER }, (_, i) => {
-            const word = draft[i];
+            const word = draft[i]
             return word ? (
               <li class="slot slot--filled" key={`${i}-${word}`}>
                 <span class="slot__n">{i + 1}</span>
@@ -175,6 +144,7 @@ export function WritingPhase({
                   <button
                     type="button"
                     class="slot__remove"
+                    data-sfx="none"
                     aria-label={`Quitar ${word}`}
                     onClick={() => remove(i)}
                   >
@@ -186,7 +156,7 @@ export function WritingPhase({
               <li class="slot" key={`e${i}`}>
                 <span class="slot__n">{i + 1}</span>
               </li>
-            );
+            )
           })}
         </ol>
 
@@ -202,22 +172,14 @@ export function WritingPhase({
               autocomplete="off"
               autocapitalize="sentences"
               enterkeyhint="done"
-              placeholder={
-                locked
-                  ? "Tus palabras ya fueron entregadas"
-                  : "Escribí una palabra…"
-              }
+              placeholder={locked ? 'Tus palabras ya fueron entregadas' : 'Escribí una palabra…'}
               aria-label="Nueva palabra"
               onInput={(e) => {
-                setText((e.target as HTMLInputElement).value);
-                setError("");
+                setText((e.target as HTMLInputElement).value)
+                setError('')
               }}
             />
-            <button
-              class="btn btn--primary"
-              type="submit"
-              disabled={locked || !text.trim()}
-            >
+            <button class="btn btn--primary" type="submit" data-sfx="none" disabled={locked || !text.trim()}>
               Agregar
             </button>
           </div>
@@ -234,7 +196,7 @@ export function WritingPhase({
               <p class="notice">
                 Listo. Esperando a los demás ({readyCount}/{connected.length})…
               </p>
-              <button class="btn" type="button" onClick={toggleReady}>
+              <button class="btn" type="button" data-sfx="none" onClick={toggleReady}>
                 Seguir editando
               </button>
             </>
@@ -243,16 +205,13 @@ export function WritingPhase({
               <p class="hint">
                 {readyCount}/{connected.length} jugadores listos
                 {draft.length < WORDS_PER_PLAYER && (
-                  <span class="hide-sm">
-                    {" "}
-                    · Podés entregar antes, pero completá las 8 para más
-                    chances.
-                  </span>
+                  <span class="hide-sm"> · Podés entregar antes, pero completá las 8 para más chances.</span>
                 )}
               </p>
               <button
                 class="btn btn--good btn--big"
                 type="button"
+                data-sfx="none"
                 onClick={toggleReady}
                 disabled={draft.length === 0}
               >
@@ -264,12 +223,61 @@ export function WritingPhase({
       </section>
       {intro && (
         <DrawIntro
-          word={state.word ?? ""}
+          word={state.word ?? ''}
           round={state.round}
-          elapsed={elapsed}
-          rects={rects}
+          totalRounds={state.totalRounds}
+          players={state.players}
+          stage={stage}
+          startAt={startAt}
+          now={() => session.now()}
         />
       )}
     </>
-  );
+  )
+}
+
+function canTransition(): boolean {
+  return (
+    typeof document.startViewTransition === 'function' &&
+    !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
+}
+
+/**
+ * Sigue la etapa del sorteo y, al pasar de la máquina a la escritura, envuelve el cambio
+ * en una View Transition: la palabra y el reloj viajan de la máquina a su lugar.
+ */
+function useDrawTransition(target: DrawStage): DrawStage {
+  const [shown, setShown] = useState<DrawStage>(target)
+  const busy = useRef(false)
+  const committed = useRef<(() => void) | null>(null)
+
+  useEffect(() => {
+    if (busy.current || target === shown) return
+    if (shown === 'landed' && target === 'move' && canTransition()) {
+      busy.current = true
+      const vt = document.startViewTransition(
+        () =>
+          new Promise<void>((resolve) => {
+            committed.current = resolve
+            setShown('move')
+          }),
+      )
+      vt.finished.finally(() => {
+        busy.current = false
+      })
+      return
+    }
+    setShown(target)
+  }, [target, shown])
+
+  useLayoutEffect(() => {
+    committed.current?.()
+    committed.current = null
+    setDrawStage(shown === 'done' ? null : shown)
+  }, [shown])
+
+  useEffect(() => () => setDrawStage(null), [])
+
+  return shown
 }

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { type PublicState } from '../game/types'
 import {
+  codeFromHash,
+  codeFromText,
   createTestSession,
   diagnoseSilence,
   GIVE_UP_MS,
@@ -8,6 +10,7 @@ import {
   isIceFailure,
   isWebRtcMissing,
   PUBLISHING_MESSAGE,
+  roomHash,
   WEBRTC_MESSAGE,
   type Session,
 } from './room'
@@ -228,3 +231,19 @@ function lobbyState(): PublicState {
   roundPoints: {},
   }
 }
+
+describe('enlace de sala', () => {
+  it('el hash de la sala se lee de vuelta', () => {
+    expect(codeFromHash(roomHash('AB2CD'))).toBe('AB2CD')
+    expect(codeFromHash('#/sala/ab2cd/')).toBe('AB2CD')
+    expect(codeFromHash('#/sala/AB2')).toBeNull()
+    expect(codeFromHash('')).toBeNull()
+  })
+
+  it('acepta el código solo o el enlace entero pegado en el campo', () => {
+    expect(codeFromText('ab-2cd')).toBe('AB2CD')
+    expect(codeFromText('https://juego.example/palabras/#/sala/xy3zw')).toBe('XY3ZW')
+    expect(codeFromText('Vení a jugar: https://juego.example/#/sala/XY3ZW ¡te espero!')).toBe('XY3ZW')
+    expect(codeFromText('AB')).toBe('AB')
+  })
+})

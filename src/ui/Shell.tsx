@@ -1,9 +1,10 @@
 import type { ComponentChildren } from 'preact'
-import { useState } from 'preact/hooks'
-import { roomLink, type Snapshot } from '../net/room'
+import type { Snapshot } from '../net/room'
 import { Help } from './Help'
 import { Scoreboard } from './Scoreboard'
+import { SoundToggle } from './SoundToggle'
 import { Stepper } from './Stepper'
+import { canShareNatively, useInvite } from './useInvite'
 
 interface Props {
   snap: Snapshot
@@ -27,19 +28,9 @@ export function Logo() {
 }
 
 export function Shell({ snap, hold, onLeave, onRetry, children }: Props) {
-  const [copied, setCopied] = useState(false)
   const state = snap.state
+  const [feedback, invite] = useInvite(snap.code, state?.roomName)
   const showSide = !!state && ['word', 'writing', 'reveal', 'roundSummary'].includes(state.phase)
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(roomLink(snap.code))
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1800)
-    } catch {
-      window.prompt('Copiá este enlace para invitar a otros jugadores:', roomLink(snap.code))
-    }
-  }
 
   const leave = () => {
     const inGame = state && state.phase !== 'lobby' && state.phase !== 'final'
@@ -55,9 +46,15 @@ export function Shell({ snap, hold, onLeave, onRetry, children }: Props) {
       <header class="topbar">
         <Logo />
         <div class="topbar__right">
-          <button class="pill pill--code" type="button" onClick={copy} title="Copiar enlace de invitación">
-            {copied ? (
-              '¡Enlace copiado!'
+          <button
+            class="pill pill--code"
+            type="button"
+            data-sfx="none"
+            onClick={invite}
+            title={canShareNatively() ? 'Compartir enlace de invitación' : 'Copiar enlace de invitación'}
+          >
+            {feedback ? (
+              feedback === 'shared' ? '¡Compartido!' : '¡Enlace copiado!'
             ) : (
               <>
                 {state?.roomName && <span class="pill__name">{state.roomName} · </span>}
@@ -65,8 +62,9 @@ export function Shell({ snap, hold, onLeave, onRetry, children }: Props) {
               </>
             )}
           </button>
+          <SoundToggle />
           <Help />
-          <button class="btn btn--ghost" type="button" onClick={leave}>
+          <button class="btn btn--ghost" type="button" data-sfx="none" onClick={leave}>
             Salir
           </button>
         </div>

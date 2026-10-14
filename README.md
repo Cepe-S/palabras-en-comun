@@ -22,7 +22,8 @@ Se juega de 2 a 8 jugadores. El anfitrión crea la sala, comparte el código de 
 
 ```sh
 npm install
-npm run dev        # servidor local
+npm run dev        # juego en modo dev (http://127.0.0.1:5173, con DevHUD) — correr desde la raíz
+npm run dev:turn   # opcional: Worker de credenciales TURN en http://localhost:8787
 npm test           # tests de la lógica del juego
 npm run build      # genera dist/
 ```

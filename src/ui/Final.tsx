@@ -88,7 +88,7 @@ export function Final({ snap, session, onLeave }: { snap: Snapshot; session: Ses
           ) : (
             <p class="hint">Esperando al anfitrión para jugar otra vez…</p>
           )}
-          <button class="btn" type="button" onClick={onLeave}>
+          <button class="btn" type="button" data-sfx="none" onClick={onLeave}>
             Salir
           </button>
         </div>

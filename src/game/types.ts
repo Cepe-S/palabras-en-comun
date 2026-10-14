@@ -2,9 +2,13 @@ export const TOTAL_ROUNDS = 3
 export const WORDS_PER_PLAYER = 8
 export const WRITING_SECONDS = 90
 /** Sorteo animado de la palabra antes de que arranque el cronómetro (ms). */
-export const DRAW_SPIN_MS = 3400
-export const DRAW_LANDED_MS = 4700
-export const DRAW_MS = 5700
+/** Al empezar la partida: carga falsa y anuncio, antes del primer sorteo (ms). */
+export const START_LOADING_MS = 3000
+export const START_ANNOUNCE_MS = 1800
+export const START_MS = START_LOADING_MS + START_ANNOUNCE_MS
+export const DRAW_SPIN_MS = 4200
+export const DRAW_LANDED_MS = 5600
+export const DRAW_MS = 6600
 export const MIN_PLAYERS = 2
 export const MAX_PLAYERS = 8
 export const MAX_WORD_LENGTH = 28

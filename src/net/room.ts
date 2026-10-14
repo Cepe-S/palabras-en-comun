@@ -138,14 +138,25 @@ export function normalizeCode(input: string): string {
   return input.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5)
 }
 
+/** Parte del enlace que identifica la sala: `#/sala/ABCDE`. */
+export function roomHash(code: string): string {
+  return `#/sala/${code}`
+}
+
 export function roomLink(code: string): string {
   const { origin, pathname } = window.location
-  return `${origin}${pathname}#/sala/${code}`
+  return `${origin}${pathname}${roomHash(code)}`
 }
 
 export function codeFromHash(hash: string): string | null {
-  const match = /^#\/sala\/([A-Za-z0-9]{5})$/.exec(hash)
+  const match = /^#\/sala\/([A-Za-z0-9]{5})\/?$/.exec(hash)
   return match ? match[1].toUpperCase() : null
+}
+
+/** Lo que alguien escribe o pega en el campo del código: el código solo o el enlace entero. */
+export function codeFromText(text: string): string {
+  const fromLink = /#\/sala\/([A-Za-z0-9]{5})\b/.exec(text)
+  return fromLink ? fromLink[1].toUpperCase() : normalizeCode(text)
 }
 
 /* ---------- Sesión ---------- */

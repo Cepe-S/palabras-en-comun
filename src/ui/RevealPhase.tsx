@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useState } from 'preact/hooks'
+import { sfx } from '../audio/engine'
 import type { Player, RevealStep, WordStep } from '../game/types'
 import type { SessionLike, Snapshot } from '../net/room'
 import { playerById } from './derive'
@@ -9,6 +10,15 @@ const FLIP_MS = 600
 const VOTER_MS = 520
 const SETTLE_MS = 450
 const AUTO_DWELL_MS = 2200
+const TURN_MS = 900
+/** Cada ficha que aparece suena un grado más arriba en una escala mayor. */
+const VOTER_SCALE = [1, 1.122, 1.26, 1.335, 1.498, 1.682, 1.888, 2]
+const POINTS_SFX_DELAY_MS = 220
+
+function scoreSound(points: number, count: number, players: number) {
+  if (points <= 0) return sfx('revelado/cero-puntos')
+  sfx(count >= 3 && count === players ? 'revelado/coincidencia-total' : 'revelado/puntos')
+}
 
 interface Props {
   snap: Snapshot
@@ -38,8 +48,22 @@ function WordReveal({ step, players }: { step: WordStep; players: Player[] }) {
     setShown(0)
     const timers: ReturnType<typeof setTimeout>[] = []
     for (let i = 1; i <= ordered.length; i++) {
-      timers.push(setTimeout(() => setShown(i), FLIP_MS + (i - 1) * VOTER_MS))
+      timers.push(
+        setTimeout(
+          () => {
+            setShown(i)
+            sfx('revelado/ficha', { rate: VOTER_SCALE[Math.min(i, VOTER_SCALE.length) - 1] })
+          },
+          FLIP_MS + (i - 1) * VOTER_MS,
+        ),
+      )
     }
+    timers.push(
+      setTimeout(
+        () => scoreSound(step.points, step.count, players.length),
+        FLIP_MS + (ordered.length - 1) * VOTER_MS + POINTS_SFX_DELAY_MS,
+      ),
+    )
     return () => timers.forEach(clearTimeout)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step.key, step.playerId])
@@ -92,9 +116,13 @@ export function RevealPhase({ snap, session, onHold }: Props) {
   // Cuánto dura la animación del paso actual (el marcador espera a que termine).
   useEffect(() => {
     if (!last) return
-    const ms = last.kind === 'word' ? FLIP_MS + last.voters.length * VOTER_MS + SETTLE_MS : 900
-    const t = setTimeout(() => setDoneAt(cursor), ms)
-    return () => clearTimeout(t)
+    const ms = last.kind === 'word' ? FLIP_MS + last.voters.length * VOTER_MS + SETTLE_MS : TURN_MS
+    const timers = [setTimeout(() => setDoneAt(cursor), ms)]
+    if (last.kind === 'turn' && last.silent.length > 0) {
+      timers.push(setTimeout(() => sfx('revelado/ya-contadas'), 250))
+      if (last.points > 0) timers.push(setTimeout(() => sfx('revelado/puntos'), TURN_MS))
+    }
+    return () => timers.forEach(clearTimeout)
   }, [cursor])
 
   // Layout effect: el marcador se oculta antes de pintar para no adelantar el resultado.
@@ -179,6 +207,7 @@ export function RevealPhase({ snap, session, onHold }: Props) {
             <button
               class="btn btn--primary btn--big"
               type="button"
+              data-sfx="none"
               disabled={!done}
               onClick={() => session.act({ type: 'next' })}
             >
@@ -186,11 +215,23 @@ export function RevealPhase({ snap, session, onHold }: Props) {
             </button>
             {cursor > 0 && cursor < totalSteps && (
               <label class="switch">
-                <input type="checkbox" checked={auto} onChange={(e) => setAuto((e.target as HTMLInputElement).checked)} />
+                <input
+                  type="checkbox"
+                  checked={auto}
+                  onChange={(e) => {
+                    setAuto((e.target as HTMLInputElement).checked)
+                    sfx('interfaz/interruptor')
+                  }}
+                />
                 Automático
               </label>
             )}
-            <button class="btn btn--ghost" type="button" onClick={() => session.act({ type: 'skipReveal' })}>
+            <button
+              class="btn btn--ghost"
+              type="button"
+              data-sfx="none"
+              onClick={() => session.act({ type: 'skipReveal' })}
+            >
               Saltar<span class="hide-sm"> al resumen</span>
             </button>
           </div>

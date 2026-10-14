@@ -67,7 +67,9 @@ export function RoundSummary({ snap, session }: { snap: Snapshot; session: Sessi
       </section>
 
       <details class="card card--flat words-details" open={wide}>
-        <summary class="card__title">Todas las palabras</summary>
+        <summary class="card__title" data-sfx="interfaz/desplegar">
+          Todas las palabras
+        </summary>
         <div>
           {state.players.map((p) => {
             const list = words[p.id] ?? []

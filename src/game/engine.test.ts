@@ -13,7 +13,7 @@ import {
   totalScore,
   winners,
 } from './engine'
-import { DRAW_MS, type Action, type Ctx, type GameState } from './types'
+import { DRAW_MS, START_MS, type Action, type Ctx, type GameState } from './types'
 
 const ctx = (now = 0): Ctx => ({ now, random: () => 0 })
 
@@ -150,9 +150,9 @@ describe('flujo de partida', () => {
 
   it('termina la escritura al vencer el tiempo (con margen)', () => {
     let s = reduce(lobby('Ana', 'Beto'), { type: 'start', by: 'host' }, ctx(1000))
-    expect(s.endsAt).toBe(1000 + 90_000 + DRAW_MS)
-    expect(reduce(s, { type: 'tick' }, ctx(91_000 + DRAW_MS)).phase).toBe('writing')
-    expect(reduce(s, { type: 'tick' }, ctx(93_000 + DRAW_MS)).phase).toBe('reveal')
+    expect(s.endsAt).toBe(1000 + 90_000 + DRAW_MS + START_MS)
+    expect(reduce(s, { type: 'tick' }, ctx(91_000 + DRAW_MS + START_MS)).phase).toBe('writing')
+    expect(reduce(s, { type: 'tick' }, ctx(93_000 + DRAW_MS + START_MS)).phase).toBe('reveal')
   })
 
   it('no cuenta a los desconectados para cerrar la escritura', () => {

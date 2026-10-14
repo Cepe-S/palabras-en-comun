@@ -2,6 +2,7 @@ import { WORDS } from '../data/words'
 import {
   MAX_PLAYERS,
   DRAW_MS,
+  START_MS,
   MAX_NAME_LENGTH,
   MAX_ROOM_NAME_LENGTH,
   MAX_WORD_LENGTH,
@@ -226,7 +227,7 @@ function startWordPhase(state: GameState, ctx: Ctx, round: number): GameState {
       ...state,
       phase: 'writing',
       round,
-      endsAt: ctx.now + DRAW_MS + WRITING_SECONDS * 1000,
+      endsAt: ctx.now + (round === 1 ? START_MS : 0) + DRAW_MS + WRITING_SECONDS * 1000,
       submissions: {},
       queue: [],
       cursor: 0,

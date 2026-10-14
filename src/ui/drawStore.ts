@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks'
 
-export type DrawStage = 'spin' | 'landed' | 'move' | null
+export type DrawStage = 'loading' | 'announce' | 'spin' | 'landed' | 'move' | null
 
 let current: DrawStage = null
 const listeners = new Set<(s: DrawStage) => void>()

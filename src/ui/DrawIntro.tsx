@@ -1,139 +1,272 @@
-import { useEffect, useMemo } from "preact/hooks";
-import { WORDS } from "../data/words";
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'preact/hooks'
+import { sfx } from '../audio/engine'
+import { WORDS } from '../data/words'
 import {
+  DRAW_LANDED_MS,
   DRAW_MS,
   DRAW_SPIN_MS,
-  DRAW_LANDED_MS,
+  START_ANNOUNCE_MS,
+  START_LOADING_MS,
   WRITING_SECONDS,
-} from "../game/types";
-import { setDrawStage } from "./drawStore";
-import { Timer } from "./Timer";
+  type Player,
+} from '../game/types'
+import { PlayerToken } from './PlayerToken'
+import { Timer } from './Timer'
 
-export interface IntroRects {
-  word: DOMRect;
-  wordFont: number;
-  timer: DOMRect;
-}
+export type DrawStage = 'loading' | 'announce' | 'spin' | 'landed' | 'move' | 'done'
 
-const REEL_ITEMS = 26;
-const REEL_FONT = 30.4; // 1.9rem, igual que las palabras del carrete
-
-/** Etapa del sorteo según los ms transcurridos (se calcula con el reloj del anfitrión). */
-export function drawStage(
-  elapsed: number,
-): "spin" | "landed" | "move" | "done" {
-  if (elapsed < DRAW_SPIN_MS) return "spin";
-  if (elapsed < DRAW_LANDED_MS) return "landed";
-  if (elapsed < DRAW_MS) return "move";
-  return "done";
-}
-
-function centerShift(rect: DOMRect, cy: number, scale: number): string {
-  const dx = window.innerWidth / 2 - (rect.left + rect.width / 2);
-  const dy = cy - (rect.top + rect.height / 2);
-  return `translate(${dx}px, ${dy}px) scale(${scale})`;
-}
+const ROW_H = 60
+const ROWS = 5
+/** A toda velocidad pasan cientos de palabras por segundo: el tic se limita a un ritmo audible. */
+const REEL_TICK_MIN_MS = 55
 
 /**
- * Tragamonedas de palabras. La palabra y el reloj se dibujan en el centro y luego
- * viajan hasta su lugar en la pantalla de escritura (rects de los elementos reales).
+ * Etapa según los ms desde que arranca el sorteo (reloj del anfitrión).
+ * Los valores negativos son la carga falsa y el anuncio, que solo existen en la ronda 1.
  */
+export function drawStage(elapsed: number): DrawStage {
+  if (elapsed < -START_ANNOUNCE_MS) return 'loading'
+  if (elapsed < 0) return 'announce'
+  if (elapsed < DRAW_SPIN_MS) return 'spin'
+  if (elapsed < DRAW_LANDED_MS) return 'landed'
+  if (elapsed < DRAW_MS) return 'move'
+  return 'done'
+}
+
+function shuffle<T>(items: T[]): T[] {
+  const out = [...items]
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[out[i], out[j]] = [out[j], out[i]]
+  }
+  return out
+}
+
+const easeOut = (x: number) => 1 - Math.pow(1 - x, 4)
+
+/* ---------- Carga falsa ---------- */
+
+/** Curva de progreso con frenadas y arranques, para que parezca una carga de verdad. */
+const LOAD_CURVE: [number, number][] = [
+  [0, 0],
+  [0.12, 0.18],
+  [0.24, 0.21],
+  [0.36, 0.47],
+  [0.48, 0.52],
+  [0.6, 0.78],
+  [0.72, 0.97],
+  [0.86, 0.99],
+  [0.94, 0.99],
+  [1, 1],
+]
+
+function fakeProgress(t: number): number {
+  for (let i = 1; i < LOAD_CURVE.length; i++) {
+    const [x1, y1] = LOAD_CURVE[i]
+    const [x0, y0] = LOAD_CURVE[i - 1]
+    if (t <= x1) return y0 + ((t - x0) / (x1 - x0)) * (y1 - y0)
+  }
+  return 1
+}
+
+/** Debe coincidir con la animación `hop` de styles.css: dura 0.7 s y la ficha cae al 60 %. */
+const HOP_MS = 700
+const HOP_LAND_MS = 420
+const HOP_STAGGER_MS = 90
+
+function useHopSounds(count: number) {
+  useEffect(() => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const timers = new Set<ReturnType<typeof setTimeout>>()
+    const hop = () => {
+      for (let i = 0; i < count; i++) {
+        const id = setTimeout(() => {
+          timers.delete(id)
+          sfx('sorteo/salto-ficha', { rate: 1 + i * 0.04, volume: 0.6 })
+        }, HOP_LAND_MS + i * HOP_STAGGER_MS)
+        timers.add(id)
+      }
+    }
+    hop()
+    const loop = setInterval(hop, HOP_MS)
+    return () => {
+      clearInterval(loop)
+      timers.forEach(clearTimeout)
+    }
+  }, [count])
+}
+
+function FakeLoading({ elapsed, players }: { elapsed: number; players: Player[] }) {
+  const t = Math.min(1, Math.max(0, elapsed / START_LOADING_MS))
+  const pct = Math.round(fakeProgress(t) * 100)
+  useHopSounds(players.length)
+  return (
+    <div class="loadfx" role="status" aria-live="polite">
+      <div class="loadfx__tokens" aria-hidden="true">
+        {players.map((p, i) => (
+          <span key={p.id} class="loadfx__hop" style={`animation-delay:${i * HOP_STAGGER_MS}ms`}>
+            <PlayerToken player={p} />
+          </span>
+        ))}
+      </div>
+      <p class="loadfx__title">Preparando partida…</p>
+      <div class="loadfx__bar" aria-hidden="true">
+        <div class="loadfx__fill" style={`width:${pct}%`} />
+      </div>
+      <p class="loadfx__pct">{pct}%</p>
+    </div>
+  )
+}
+
+/* ---------- Anuncio ---------- */
+
+const CONFETTI = Array.from({ length: 22 }, (_, i) => {
+  const angle = (i / 22) * Math.PI * 2 + (i % 3) * 0.2
+  const dist = 120 + (i % 5) * 26
+  return {
+    x: Math.round(Math.cos(angle) * dist),
+    y: Math.round(Math.sin(angle) * dist),
+    r: (i * 47) % 360,
+    c: `var(--p${i % 8})`,
+    d: (i % 4) * 0.04,
+  }
+})
+
+function Announce({ round, total }: { round: number; total: number }) {
+  return (
+    <div class="announce" role="status">
+      <div class="announce__burst" aria-hidden="true">
+        {CONFETTI.map((p, i) => (
+          <i
+            key={i}
+            style={`--x:${p.x}px;--y:${p.y}px;--r:${p.r}deg;background:${p.c};animation-delay:${0.25 + p.d}s`}
+          />
+        ))}
+      </div>
+      <p class="announce__round">
+        Ronda {round} de {total}
+      </p>
+      <p class="announce__title">
+        ¡Que empiece
+        <br />
+        el sorteo!
+      </p>
+    </div>
+  )
+}
+
+/* ---------- Tragamonedas ---------- */
+
+/** Recorre todas las palabras del juego y frena en la elegida. Solo hay unas pocas filas en el DOM. */
+function SlotMachine({
+  word,
+  round,
+  landed,
+  startAt,
+  now,
+}: {
+  word: string
+  round: number
+  landed: boolean
+  startAt: number
+  now: () => number
+}) {
+  const seq = useMemo(() => [...shuffle(WORDS.filter((w) => w !== word)), word], [word, round])
+  const reelRef = useRef<HTMLDivElement>(null)
+
+  useLayoutEffect(() => {
+    const reel = reelRef.current
+    if (!reel) return
+    const rows = Array.from(reel.children) as HTMLElement[]
+    const target = seq.length - 1
+    let raf = 0
+    let lastPos = -1
+    let lastTs = 0
+    let lastBase = -1
+    let lastTick = 0
+    const frame = () => {
+      const t = Math.min(1, Math.max(0, (now() - startAt) / DRAW_SPIN_MS))
+      const pos = easeOut(t) * target
+      const base = Math.floor(pos)
+      const frac = pos - base
+      if (base !== lastBase) {
+        if (lastBase >= 0 && performance.now() - lastTick >= REEL_TICK_MIN_MS) {
+          lastTick = performance.now()
+          sfx('sorteo/carrete', { rate: 0.95 + Math.random() * 0.1 })
+        }
+        lastBase = base
+      }
+      rows.forEach((row, j) => {
+        const k = (((base - 1 + j) % seq.length) + seq.length) % seq.length
+        const text = row.firstElementChild as HTMLElement
+        if (text.textContent !== seq[k]) text.textContent = seq[k]
+        row.style.transform = `translateY(${(j - 1 - frac) * ROW_H}px)`
+      })
+      const ts = performance.now()
+      const speed = lastPos < 0 ? 0 : ((pos - lastPos) * ROW_H * 1000) / Math.max(1, ts - lastTs)
+      reel.style.filter = speed > 400 ? `blur(${Math.min(3, speed / 2500).toFixed(2)}px)` : ''
+      lastPos = pos
+      lastTs = ts
+      if (t < 1) raf = requestAnimationFrame(frame)
+    }
+    frame()
+    return () => cancelAnimationFrame(raf)
+  }, [seq, startAt])
+
+  return (
+    <div class={`slotm ${landed ? 'slotm--landed' : ''}`}>
+      <p class="slotm__title">{landed ? '¡La palabra es…!' : 'Sorteando palabra…'}</p>
+      <div class="slotm__lights" aria-hidden="true">
+        {Array.from({ length: 12 }, (_, i) => (
+          <span key={i} style={`animation-delay:${(i % 2) * 0.25}s`} />
+        ))}
+      </div>
+      <div class="slotm__window">
+        <div class="slotm__reel" ref={reelRef} aria-hidden={!landed}>
+          {Array.from({ length: ROWS }, (_, j) => (
+            <div class={`slotm__row ${landed && j === 1 ? 'slotm__row--win' : ''}`} key={j}>
+              <span class="slotm__text" />
+            </div>
+          ))}
+        </div>
+        <div class="slotm__line" aria-hidden="true" />
+      </div>
+      {landed && (
+        <div class="slotm__timer">
+          <Timer remainingMs={WRITING_SECONDS * 1000} totalMs={WRITING_SECONDS * 1000} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function DrawIntro({
   word,
   round,
-  elapsed,
-  rects,
+  totalRounds,
+  players,
+  stage,
+  startAt,
+  now,
 }: {
-  word: string;
-  round: number;
-  elapsed: number;
-  rects: IntroRects | null;
+  word: string
+  round: number
+  totalRounds: number
+  players: Player[]
+  stage: DrawStage
+  startAt: number
+  now: () => number
 }) {
-  const stage = drawStage(elapsed);
-  useEffect(() => {
-    setDrawStage(stage === "done" ? null : stage);
-  }, [stage]);
-  useEffect(() => () => setDrawStage(null), []);
-
-  const strip = useMemo(() => {
-    const pool = WORDS.filter((w) => w !== word);
-    const items: string[] = [];
-    let last = "";
-    for (let i = 0; i < REEL_ITEMS; i++) {
-      let w = pool[Math.floor(Math.random() * pool.length)];
-      if (w === last) w = pool[(pool.indexOf(w) + 1) % pool.length];
-      items.push(w);
-      last = w;
-    }
-    items.push(word);
-    items.push(pool[Math.floor(Math.random() * pool.length)]);
-    return items;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [word, round]);
-
-  if (stage === "done") return null;
-
-  const cy = window.innerHeight * 0.4;
-  const k = rects
-    ? Math.min(
-        REEL_FONT / rects.wordFont,
-        (window.innerWidth * 0.84) / Math.max(rects.word.width, 1),
-      )
-    : 1;
-  const centered = stage !== "move";
-
-  const wordStyle = rects
-    ? `left:${rects.word.left}px;top:${rects.word.top}px;width:${rects.word.width}px;height:${rects.word.height}px;` +
-      `transform:${centered ? centerShift(rects.word, cy, k) : "none"};` +
-      `opacity:${stage === "spin" ? 0 : 1}`
-    : "opacity:0";
-  const timerStyle = rects
-    ? `left:${rects.timer.left}px;top:${rects.timer.top}px;width:${rects.timer.width}px;height:${rects.timer.height}px;` +
-      `transform:${centered ? centerShift(rects.timer, cy + 90 + 16 + rects.timer.height / 2, 1) : "none"};` +
-      `opacity:${stage === "spin" ? 0 : 1}`
-    : "opacity:0";
-
+  if (stage === 'move' || stage === 'done') return null
   return (
     <div class="draw" aria-live="polite">
-      <>
-        <div
-          class={`slotm ${stage === "move" ? "slotm--out" : ""}`}
-          style={`top:${cy}px`}
-        >
-          <p class="slotm__title">Sorteando palabra…</p>
-          <div class="slotm__lights" aria-hidden="true">
-            {Array.from({ length: 12 }, (_, i) => (
-              <span key={i} style={`animation-delay:${(i % 2) * 0.25}s`} />
-            ))}
-          </div>
-          <div class="slotm__window">
-            <div
-              class="slotm__strip"
-              style={`--end:${-(REEL_ITEMS - 0) * 60 + 60}px;--spin:${DRAW_SPIN_MS}ms;animation-delay:-${Math.min(elapsed, DRAW_SPIN_MS)}ms`}
-            >
-              {strip.map((w, i) => (
-                <div
-                  class={`slotm__item ${i === REEL_ITEMS && stage !== "spin" ? "slotm__item--gone" : ""}`}
-                  key={i}
-                >
-                  {w}
-                </div>
-              ))}
-            </div>
-            <div class="slotm__line" aria-hidden="true" />
-          </div>
-        </div>
-      </>
-
-      <strong class={`draw__word`} style={wordStyle}>
-        {word}
-      </strong>
-      <div class="draw__timer" style={timerStyle}>
-        <Timer
-          remainingMs={WRITING_SECONDS * 1000}
-          totalMs={WRITING_SECONDS * 1000}
-        />
-      </div>
+      {stage === 'loading' && (
+        <FakeLoading elapsed={now() - (startAt - START_ANNOUNCE_MS - START_LOADING_MS)} players={players} />
+      )}
+      {stage === 'announce' && <Announce round={round} total={totalRounds} />}
+      {(stage === 'spin' || stage === 'landed') && (
+        <SlotMachine word={word} round={round} landed={stage === 'landed'} startAt={startAt} now={now} />
+      )}
     </div>
-  );
+  )
 }

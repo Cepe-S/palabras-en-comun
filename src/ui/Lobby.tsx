@@ -1,24 +1,22 @@
-import { useState } from 'preact/hooks'
 import { MAX_PLAYERS, MIN_PLAYERS } from '../game/types'
-import { roomLink, type SessionLike, type Snapshot } from '../net/room'
+import type { SessionLike, Snapshot } from '../net/room'
 import { PlayerToken } from './PlayerToken'
+import { canShareNatively, useInvite } from './useInvite'
 
 export function Lobby({ snap, session }: { snap: Snapshot; session: SessionLike }) {
   const state = snap.state!
-  const [copied, setCopied] = useState(false)
+  const [feedback, invite] = useInvite(snap.code, state.roomName)
   const connected = state.players.filter((p) => p.connected).length
   const canStart = snap.isHost && connected >= MIN_PLAYERS
   const empty = Math.max(0, MAX_PLAYERS - state.players.length)
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(roomLink(snap.code))
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1800)
-    } catch {
-      window.prompt('Copiá este enlace para invitar a otros jugadores:', roomLink(snap.code))
-    }
-  }
+  const inviteLabel =
+    feedback === 'shared'
+      ? '¡Enlace compartido!'
+      : feedback === 'copied'
+        ? '¡Enlace copiado!'
+        : canShareNatively()
+          ? 'Compartir enlace de invitación'
+          : 'Copiar enlace de invitación'
 
   return (
     <>
@@ -28,11 +26,12 @@ export function Lobby({ snap, session }: { snap: Snapshot; session: SessionLike 
         <p class="code-card__code" aria-label={`Código ${snap.code.split('').join(' ')}`}>
           {snap.code}
         </p>
-        <button class="btn" type="button" onClick={copy}>
-          {copied ? '¡Enlace copiado!' : 'Copiar enlace de invitación'}
+        <button class="btn" type="button" data-sfx="none" onClick={invite}>
+          {inviteLabel}
         </button>
         <p class="hint hide-sm" style="margin-top:12px;color:var(--ink)">
-          Pasales el código o el enlace. Se juega de a {MIN_PLAYERS} a {MAX_PLAYERS} jugadores.
+          Con el enlace entran directo, sin escribir el código. Se juega de a {MIN_PLAYERS} a {MAX_PLAYERS}{' '}
+          jugadores.
         </p>
       </section>
 
