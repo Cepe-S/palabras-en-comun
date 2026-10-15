@@ -46,6 +46,7 @@ function snap(s: PublicState | null, extra: Partial<Snapshot> = {}): Snapshot {
     clockOffset: 0,
     myWords: null,
     strategies: [],
+    reconnecting: false,
     ...extra,
   }
 }

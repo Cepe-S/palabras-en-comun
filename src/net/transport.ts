@@ -8,6 +8,14 @@ export const SIGNALING_DOWN = 'signaling-unavailable'
 
 const ROOM_CODE = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{5}$/
 
+/** ICE `disconnected` a veces se recupera solo. Recién después se abre otro canal. */
+const DISCONNECT_GRACE_MS = 1_500
+/** Pausa corta para no pisar un cierre que todavía se está propagando. */
+const REVIVE_DELAY_MS = 300
+/** Si el anfitrión no ofrece en este plazo, se pide otro hueco. */
+const OFFER_WAIT_MS = 3_000
+const REVIVE_RETRY_MS = 2_000
+
 const STUN: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun.cloudflare.com:3478' },
@@ -24,6 +32,10 @@ export interface Link {
   use(name: StrategyName): Promise<void>
   sendTo(peerId: string, data: string): Promise<boolean>
   broadcast(data: string): void
+  /** Reabre la señalización si el canal ya había funcionado y ahora está caído. */
+  nudge(): void
+  /** Deja de reintentar: el anfitrión cerró la sala a propósito. */
+  abandon(): void
   leave(): void
 }
 
@@ -43,6 +55,9 @@ export interface TransportDeps {
   peerCtor?: typeof RTCPeerConnection
   turn?: Promise<TurnServerConfig[] | undefined>
   selfId?: string
+  reviveDelayMs?: number
+  disconnectGraceMs?: number
+  offerWaitMs?: number
 }
 
 /**
@@ -51,6 +66,8 @@ export interface TransportDeps {
  * ICE se publican en cuanto aparecen (trickle). Al quedar `connected`, ese par
  * se desuscribe y borra su SDP. El anfitrión sigue escuchando huecos nuevos
  * para que entren más jugadores; esos listeners no llevan mensajes de la partida.
+ * Si un canal que ya estaba abierto se corta, el invitado pide otro hueco
+ * (`selfId--N`) y el anfitrión le ofrece de nuevo.
  */
 export class Transport implements Link {
   onMessage: (data: string, peerId: string) => void = () => {}
@@ -75,6 +92,14 @@ export class Transport implements Link {
   private loggedWebRtc = false
   private readonly turnReady: Promise<TurnServerConfig[] | undefined>
   private serversReady: Promise<RTCIceServer[]> | null = null
+  private generation = 0
+  private liveSlot = ''
+  private hadOpen = false
+  private abandoned = false
+  private reviving = false
+  private reviveTimer: ReturnType<typeof setTimeout> | null = null
+  private offerTimer: ReturnType<typeof setTimeout> | null = null
+  private graceTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   constructor(
     private code: string,
@@ -83,6 +108,7 @@ export class Transport implements Link {
   ) {
     installNetDebug()
     this.selfId = deps?.selfId ?? crypto.randomUUID()
+    this.liveSlot = this.selfId
     this.turnReady = deps?.turn ?? loadTurnConfig()
     netLog('transport', { code, passive, selfId: this.selfId })
   }
@@ -144,9 +170,23 @@ export class Transport implements Link {
     for (const peerId of this.peers.keys()) void this.sendTo(peerId, data)
   }
 
+  nudge(): void {
+    if (this.closed || this.abandoned || !this.passive || !this.hadOpen) return
+    const live = [...this.peers.values()].some((peer) => peer.opened && !peer.left && peer.dc?.readyState === 'open')
+    if (live) return
+    this.queueRevive(0)
+  }
+
+  abandon(): void {
+    this.abandoned = true
+    this.clearReviveTimers()
+  }
+
   leave(): void {
     if (this.closed) return
     this.closed = true
+    this.abandoned = true
+    this.clearReviveTimers()
     netLog('transport:leave', { code: this.code })
     for (const stop of this.unsubs) stop()
     this.unsubs = []
@@ -166,7 +206,7 @@ export class Transport implements Link {
     }
     this.peers.clear()
     if (!this.db) return
-    const path = this.passive ? this.slot(this.selfId) : this.room
+    const path = this.passive ? this.slot(this.liveSlot || this.selfId) : this.room
     void this.db.remove(path)
   }
 
@@ -234,7 +274,8 @@ export class Transport implements Link {
   private async waitOffer(hostId: string): Promise<void> {
     const db = this.db
     if (!db || this.closed) return
-    const slot = this.slot(this.selfId)
+    this.liveSlot = this.generation === 0 ? this.selfId : `${this.selfId}--${this.generation}`
+    const slot = this.slot(this.liveSlot)
     const stopOffer = db.onValue(`${slot}/offer`, (value) => {
       const offer = asSdp(value, 'offer')
       if (!offer) return
@@ -291,7 +332,7 @@ export class Transport implements Link {
       const answer = await peer.pc.createAnswer()
       if (!answer.sdp) throw new Error('sdp vacío')
       await peer.pc.setLocalDescription(answer)
-      await db.set(`${this.slot(this.selfId)}/answer`, { type: 'answer', sdp: answer.sdp })
+      await db.set(`${this.slot(this.liveSlot)}/answer`, { type: 'answer', sdp: answer.sdp })
       netLog('sdp', { role: 'guest', peerId: hostId, type: 'answer' })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -360,7 +401,7 @@ export class Transport implements Link {
         port: candidate.port,
       })
       const side = this.passive ? 'guestIce' : 'hostIce'
-      void this.db.push(`${this.slot(this.passive ? this.selfId : peer.id)}/${side}`, {
+      void this.db.push(`${this.signalingSlot(peer.id)}/${side}`, {
         candidate: candidate.candidate,
         sdpMid: candidate.sdpMid,
         sdpMLineIndex: candidate.sdpMLineIndex,
@@ -375,13 +416,21 @@ export class Transport implements Link {
         gathering: pc.iceGatheringState,
         signaling: pc.signalingState,
       })
-      if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+      const ice = pc.iceConnectionState
+      if (ice === 'connected' || ice === 'completed') {
+        this.clearGrace(peer.id)
         void logSelectedPair(peer.id, pc)
         this.release(peer.id)
-      } else if (pc.iceConnectionState === 'failed') {
-        this.fail('could not connect to peer after exchanging SDP; check TURN')
-        this.release(peer.id)
-        this.forget(peer.id)
+      } else if (ice === 'disconnected') {
+        if (peer.opened) this.armGrace(peer)
+      } else if (ice === 'failed') {
+        this.clearGrace(peer.id)
+        if (peer.opened) this.dropPeer(peer)
+        else {
+          this.fail('could not connect to peer after exchanging SDP; check TURN')
+          this.release(peer.id)
+          this.forget(peer.id)
+        }
       }
     })
     pc.addEventListener('icecandidateerror', (event) => {
@@ -452,6 +501,8 @@ export class Transport implements Link {
     const opened = () => {
       if (peer.opened) return
       peer.opened = true
+      this.hadOpen = true
+      this.clearOfferWait()
       netLog('peer:join', { strategy: 'firebase', peerId })
       this.onPeerJoin(peerId)
     }
@@ -459,7 +510,11 @@ export class Transport implements Link {
     dc.onmessage = (event) => {
       if (typeof event.data === 'string') this.onMessage(event.data, peerId)
     }
-    dc.onclose = () => this.forget(peerId)
+    dc.onclose = () => {
+      if (peer.left || this.closed) return
+      if (peer.opened) this.dropPeer(peer)
+      else this.forget(peer.id)
+    }
     if (dc.readyState === 'open') opened()
   }
 
@@ -477,8 +532,11 @@ export class Transport implements Link {
     for (const stop of this.sigUnsubs.get(peerId) ?? []) stop()
     this.sigUnsubs.delete(peerId)
     netLog('signaling:release', { peerId })
-    const slot = this.passive ? this.slot(this.selfId) : this.slot(peerId)
-    void this.db?.remove(slot)
+    void this.db?.remove(this.signalingSlot(peerId))
+  }
+
+  private signalingSlot(peerId: string): string {
+    return this.slot(this.passive ? this.liveSlot || this.selfId : peerId)
   }
 
   private forget(peerId: string): void {
@@ -487,6 +545,132 @@ export class Transport implements Link {
     peer.left = true
     netLog('peer:leave', { strategy: 'firebase', peerId })
     this.onPeerLeave(peerId)
+  }
+
+  /** Cierra un canal que ya había servido y, en el invitado, pide otro hueco. */
+  private dropPeer(peer: Peer): void {
+    if (peer.left || this.closed) return
+    const wasOpen = peer.opened
+    peer.left = true
+    this.clearGrace(peer.id)
+    this.release(peer.id)
+    try {
+      peer.dc?.close()
+    } catch {
+      /* ya cerrado */
+    }
+    try {
+      peer.pc.close()
+    } catch {
+      /* ya cerrado */
+    }
+    this.peers.delete(peer.id)
+    if (!wasOpen) return
+    netLog('peer:leave', { strategy: 'firebase', peerId: peer.id, revive: this.passive && !this.abandoned })
+    this.onPeerLeave(peer.id)
+    if (this.passive && !this.abandoned) this.queueRevive(this.deps?.reviveDelayMs ?? REVIVE_DELAY_MS)
+  }
+
+  private armGrace(peer: Peer): void {
+    if (this.graceTimers.has(peer.id) || peer.left || this.closed) return
+    const wait = this.deps?.disconnectGraceMs ?? DISCONNECT_GRACE_MS
+    const timer = setTimeout(() => {
+      this.graceTimers.delete(peer.id)
+      if (peer.left || this.closed) return
+      const ice = peer.pc.iceConnectionState
+      if (ice === 'connected' || ice === 'completed') return
+      this.dropPeer(peer)
+    }, wait)
+    this.graceTimers.set(peer.id, timer)
+  }
+
+  private clearGrace(peerId: string): void {
+    const timer = this.graceTimers.get(peerId)
+    if (!timer) return
+    clearTimeout(timer)
+    this.graceTimers.delete(peerId)
+  }
+
+  private queueRevive(delay: number): void {
+    if (this.closed || this.abandoned || !this.passive || !this.hadOpen || this.reviveTimer) return
+    this.reviveTimer = setTimeout(() => {
+      this.reviveTimer = null
+      void this.revive()
+    }, delay)
+  }
+
+  private async revive(): Promise<void> {
+    if (this.closed || this.abandoned || !this.passive || this.reviving || !this.hadOpen) return
+    this.reviving = true
+    try {
+      this.clearOfferWait()
+      for (const peer of this.peers.values()) {
+        peer.left = true
+        this.clearGrace(peer.id)
+        try {
+          peer.dc?.close()
+        } catch {
+          /* ya cerrado */
+        }
+        try {
+          peer.pc.close()
+        } catch {
+          /* ya cerrado */
+        }
+      }
+      this.peers.clear()
+      for (const list of this.sigUnsubs.values()) for (const stop of list) stop()
+      this.sigUnsubs.clear()
+      this.answerStarted = false
+      if (this.liveSlot) void this.db?.remove(this.slot(this.liveSlot))
+      this.generation += 1
+      const hostId = await this.readHostId()
+      if (this.closed || this.abandoned) return
+      if (!hostId) {
+        this.queueRevive(REVIVE_RETRY_MS)
+        return
+      }
+      await this.waitOffer(hostId)
+      this.armOfferWait()
+    } finally {
+      this.reviving = false
+    }
+  }
+
+  private readHostId(): Promise<string | null> {
+    const db = this.db
+    if (!db || this.closed) return Promise.resolve(null)
+    return new Promise((resolve) => {
+      const stop = db.onValue(`${this.room}/hostId`, (value) => {
+        stop()
+        resolve(typeof value === 'string' && value ? value : null)
+      })
+      this.unsubs.push(stop)
+    })
+  }
+
+  private armOfferWait(): void {
+    this.clearOfferWait()
+    const wait = this.deps?.offerWaitMs ?? OFFER_WAIT_MS
+    this.offerTimer = setTimeout(() => {
+      this.offerTimer = null
+      const open = [...this.peers.values()].some((peer) => peer.opened && !peer.left && peer.dc?.readyState === 'open')
+      if (!open) void this.revive()
+    }, wait)
+  }
+
+  private clearOfferWait(): void {
+    if (!this.offerTimer) return
+    clearTimeout(this.offerTimer)
+    this.offerTimer = null
+  }
+
+  private clearReviveTimers(): void {
+    this.clearOfferWait()
+    if (this.reviveTimer) clearTimeout(this.reviveTimer)
+    this.reviveTimer = null
+    for (const timer of this.graceTimers.values()) clearTimeout(timer)
+    this.graceTimers.clear()
   }
 }
 

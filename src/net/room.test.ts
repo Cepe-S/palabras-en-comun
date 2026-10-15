@@ -10,6 +10,8 @@ import {
   isIceFailure,
   isWebRtcMissing,
   PUBLISHING_MESSAGE,
+  RECONNECT_NOTICE_MS,
+  RECONNECTING_MESSAGE,
   roomHash,
   WEBRTC_MESSAGE,
   type Session,
@@ -37,6 +39,14 @@ class FakeLink implements Link {
   }
 
   broadcast(): void {}
+
+  abandoned = false
+
+  nudge(): void {}
+
+  abandon(): void {
+    this.abandoned = true
+  }
 
   leave(): void {}
 
@@ -197,6 +207,95 @@ describe('sesión con transporte falso', () => {
       vi.advanceTimersByTime(30_000)
       expect(session.snapshot.status).toBe('hostLost')
     } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('un corte breve no avisa y uno largo muestra que se está reconectando', () => {
+    vi.useFakeTimers()
+    try {
+      const link = new FakeLink()
+      session = createTestSession('client', 'ABCDE', 'Sol', link)
+      link.receive('host', JSON.stringify({ t: 'state', state: lobbyState() }))
+      link.leavePeer('host')
+      expect(session.snapshot.status).toBe('connected')
+      expect(session.snapshot.reconnecting).toBe(false)
+      expect(session.snapshot.message).toBeNull()
+      vi.advanceTimersByTime(RECONNECT_NOTICE_MS - 1)
+      expect(session.snapshot.reconnecting).toBe(false)
+      vi.advanceTimersByTime(1)
+      expect(session.snapshot.reconnecting).toBe(true)
+      expect(session.snapshot.message).toBe(RECONNECTING_MESSAGE)
+      vi.advanceTimersByTime(50_000)
+      expect(session.snapshot.status).toBe('connected')
+      link.receive('host', JSON.stringify({ t: 'state', state: lobbyState() }))
+      expect(session.snapshot.reconnecting).toBe(false)
+      expect(session.snapshot.message).toBeNull()
+      expect(session.snapshot.status).toBe('connected')
+    } finally {
+      session?.close()
+      vi.useRealTimers()
+    }
+  })
+
+  it('si el anfitrión cierra la sala no sigue reintentando', () => {
+    vi.useFakeTimers()
+    try {
+      const link = new FakeLink()
+      session = createTestSession('client', 'ABCDE', 'Sol', link)
+      link.receive('host', JSON.stringify({ t: 'state', state: lobbyState() }))
+      link.receive('host', JSON.stringify({ t: 'bye' }))
+      link.leavePeer('host')
+      vi.advanceTimersByTime(RECONNECT_NOTICE_MS + 1_000)
+      expect(session.snapshot.status).toBe('hostLost')
+      expect(session.snapshot.reconnecting).toBe(false)
+      expect(session.snapshot.message).toBe('El anfitrión cerró la sala.')
+      expect(link.abandoned).toBe(true)
+    } finally {
+      session?.close()
+      vi.useRealTimers()
+    }
+  })
+
+  it('si un solo jugador se va, la mesa no avisa reconexión', () => {
+    vi.useFakeTimers()
+    try {
+      const link = new FakeLink()
+      session = createTestSession('host', 'ABCDE', 'Ana', link)
+      link.relay(true)
+      link.join('p1')
+      link.receive('p1', hello('sol', 'Sol'))
+      link.leavePeer('p1')
+      vi.advanceTimersByTime(RECONNECT_NOTICE_MS + 1_000)
+      expect(session.snapshot.reconnecting).toBe(false)
+      expect(session.snapshot.message).toBeNull()
+      expect(session.snapshot.state?.players.some((p) => p.id === 'sol')).toBe(false)
+    } finally {
+      session?.close()
+      vi.useRealTimers()
+    }
+  })
+
+  it('si se caen todos los canales, el anfitrión avisa cuando la reconexión se demora', () => {
+    vi.useFakeTimers()
+    try {
+      const link = new FakeLink()
+      session = createTestSession('host', 'ABCDE', 'Ana', link)
+      link.relay(true)
+      link.join('p1')
+      link.receive('p1', hello('sol', 'Sol'))
+      link.join('p2')
+      link.receive('p2', hello('luz', 'Luz'))
+      link.leavePeer('p1')
+      link.leavePeer('p2')
+      vi.advanceTimersByTime(RECONNECT_NOTICE_MS - 1)
+      expect(session.snapshot.reconnecting).toBe(false)
+      vi.advanceTimersByTime(1)
+      expect(session.snapshot.status).toBe('connected')
+      expect(session.snapshot.reconnecting).toBe(true)
+      expect(session.snapshot.message).toBe(RECONNECTING_MESSAGE)
+    } finally {
+      session?.close()
       vi.useRealTimers()
     }
   })

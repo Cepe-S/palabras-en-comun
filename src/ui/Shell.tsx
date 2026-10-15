@@ -72,7 +72,20 @@ export function Shell({ snap, hold, onLeave, onRetry, children }: Props) {
 
       {state && <Stepper phase={state.phase} round={state.round} total={state.totalRounds} />}
 
-      {snap.message && snap.status !== 'hostLost' && (
+      {snap.reconnecting && snap.status !== 'hostLost' && (
+        <div class="notice stack" role="status">
+          <span>{snap.message ?? 'Estamos intentando reconectar…'}</span>
+          {!snap.isHost && (
+            <div class="row">
+              <button class="btn btn--sm" type="button" onClick={onRetry}>
+                Reintentar ahora
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {snap.message && snap.status !== 'hostLost' && !snap.reconnecting && (
         <div class={`notice ${snap.status === 'connecting' ? '' : 'notice--bad'}`} role="status">
           {snap.message}
         </div>

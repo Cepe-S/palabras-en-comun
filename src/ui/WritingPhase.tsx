@@ -36,8 +36,10 @@ export function WritingPhase({ snap, session }: { snap: Snapshot; session: Sessi
   const intro = stage !== 'done'
   const remaining = Math.min(rawRemaining, total)
   const timeUp = rawRemaining <= 0
-  const locked = ready || timeUp || intro
-  useCountdownSound(remaining, !intro && !timeUp, timeUp)
+  // El bloqueo sigue al reloj, no a la animación: si la animación se atrasa, igual se puede escribir.
+  const waiting = target !== 'done'
+  const locked = ready || timeUp || waiting
+  useCountdownSound(remaining, !waiting && !timeUp, timeUp)
 
   const send = (words: string[], isReady?: boolean) => {
     clearTimeout(syncTimer.current)
@@ -172,7 +174,15 @@ export function WritingPhase({ snap, session }: { snap: Snapshot; session: Sessi
               autocomplete="off"
               autocapitalize="sentences"
               enterkeyhint="done"
-              placeholder={locked ? 'Tus palabras ya fueron entregadas' : 'Escribí una palabra…'}
+              placeholder={
+                waiting
+                  ? 'Preparate…'
+                  : timeUp
+                    ? 'Se acabó el tiempo'
+                    : ready
+                      ? 'Tus palabras ya fueron entregadas'
+                      : 'Escribí una palabra…'
+              }
               aria-label="Nueva palabra"
               onInput={(e) => {
                 setText((e.target as HTMLInputElement).value)
@@ -249,13 +259,19 @@ function canTransition(): boolean {
  */
 function useDrawTransition(target: DrawStage): DrawStage {
   const [shown, setShown] = useState<DrawStage>(target)
-  const busy = useRef(false)
+  // Estado (no ref) para que, al terminar la transición, el efecto se vuelva a evaluar.
+  const [busy, setBusy] = useState(false)
   const committed = useRef<(() => void) | null>(null)
+  const running = useRef<ViewTransition | null>(null)
 
   useEffect(() => {
-    if (busy.current || target === shown) return
+    if (busy) {
+      if (target === 'done') running.current?.skipTransition()
+      return
+    }
+    if (target === shown) return
     if (shown === 'landed' && target === 'move' && canTransition()) {
-      busy.current = true
+      setBusy(true)
       const vt = document.startViewTransition(
         () =>
           new Promise<void>((resolve) => {
@@ -263,13 +279,15 @@ function useDrawTransition(target: DrawStage): DrawStage {
             setShown('move')
           }),
       )
+      running.current = vt
       vt.finished.finally(() => {
-        busy.current = false
+        running.current = null
+        setBusy(false)
       })
       return
     }
     setShown(target)
-  }, [target, shown])
+  }, [target, shown, busy])
 
   useLayoutEffect(() => {
     committed.current?.()

@@ -50,6 +50,7 @@ export class MockSession implements SessionLike {
       clockOffset: 0,
       myWords: built.myWords ?? null,
       strategies: ['dev'],
+      reconnecting: built.reconnecting ?? false,
     }
     this.emit()
   }

@@ -39,6 +39,8 @@ class AudioEngine {
   /** Pista elegida a mano desde el DevHUD; `undefined` = la que pide el juego. */
   private override: TrackId | null | undefined = undefined
   private playing: Playing | null = null
+  /** Pistas que se están apagando al cambiar de fase. */
+  private leaving = new Set<Playing>()
   private startTimer: ReturnType<typeof setTimeout> | undefined
   private duckUntil = 0
   private duckTimer: ReturnType<typeof setTimeout> | undefined
@@ -66,7 +68,9 @@ class AudioEngine {
     this.settings = { ...this.settings, ...patch }
     saveSettings(this.settings)
     if (!this.settings.sfx) this.howls.forEach((howl) => howl.stop())
-    this.applyMusicLevel()
+    // Los botones de silencio responden en el acto, sin fundido.
+    if (!this.settings.music) this.leaving.forEach((p) => this.fadeOutAndStop(p, 0))
+    this.applyMusicLevel(0)
     this.listeners.forEach((l) => l(this.settings))
   }
 
@@ -209,6 +213,16 @@ class AudioEngine {
 
   private fade(p: Playing, to: number, ms: number, done?: () => void): void {
     clearInterval(p.fadeTimer)
+    if (ms <= 0) {
+      if (p.gain) {
+        p.gain.gain.cancelScheduledValues(p.gain.context.currentTime)
+        p.gain.gain.value = to
+      } else {
+        p.el.volume = to
+      }
+      done?.()
+      return
+    }
     if (p.gain) {
       const now = p.gain.context.currentTime
       p.gain.gain.cancelScheduledValues(now)
@@ -230,8 +244,10 @@ class AudioEngine {
     }, 40)
   }
 
-  private fadeOutAndStop(p: Playing): void {
-    this.fade(p, 0, FADE_MS, () => {
+  private fadeOutAndStop(p: Playing, ms = FADE_MS): void {
+    this.leaving.add(p)
+    this.fade(p, 0, ms, () => {
+      if (!this.leaving.delete(p)) return
       p.el.pause()
       p.el.removeAttribute('src')
       p.el.load()

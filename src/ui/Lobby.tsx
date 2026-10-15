@@ -30,7 +30,7 @@ export function Lobby({ snap, session }: { snap: Snapshot; session: SessionLike 
           {inviteLabel}
         </button>
         <p class="hint hide-sm" style="margin-top:12px;color:var(--ink)">
-          Con el enlace entran directo, sin escribir el código. Se juega de a {MIN_PLAYERS} a {MAX_PLAYERS}{' '}
+          Se juega de a {MIN_PLAYERS} a {MAX_PLAYERS}{' '}
           jugadores.
         </p>
       </section>

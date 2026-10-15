@@ -171,4 +171,51 @@ describe('señalización Firebase', () => {
     host.leave()
     guest.leave()
   })
+
+  it('si el canal ya abierto se corta, el invitado pide otro hueco y el anfitrión vuelve a ofrecer', async () => {
+    created.length = 0
+    const db = new MemorySignalDb()
+    const turnConfig: TurnServerConfig[] = [{ urls: 'turns:turn.example:443?transport=tcp', username: 'u', credential: 'pw' }]
+    const deps = {
+      db,
+      peerCtor: FakePc as unknown as typeof RTCPeerConnection,
+      turn: Promise.resolve(turnConfig),
+      disconnectGraceMs: 40,
+      reviveDelayMs: 0,
+      offerWaitMs: 60_000,
+    }
+    const host = new Transport('ABCDE', false, { ...deps, selfId: 'host-1' })
+    const guest = new Transport('ABCDE', true, { ...deps, selfId: 'guest-1' })
+    await host.use('firebase')
+    await guest.use('firebase')
+    await vi.waitFor(() => {
+      expect(created).toHaveLength(2)
+      expect(created[1].remoteDescription?.type).toBe('offer')
+    })
+
+    const guestDc = new FakeDc()
+    created[1].dispatchEvent(Object.assign(new Event('datachannel'), { channel: guestDc }))
+    guestDc.open()
+    created[0].localChannel?.open()
+    created[0].setIce('connected')
+    created[1].setIce('connected')
+    await vi.waitFor(() => {
+      expect(db.get('rooms/ABCDE/slots/guest-1')).toBeUndefined()
+    })
+
+    created[1].setIce('disconnected')
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    created[1].setIce('connected')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(db.get('rooms/ABCDE/slots/guest-1--1')).toBeUndefined()
+
+    created[1].setIce('failed')
+    await vi.waitFor(() => {
+      const offer = db.get('rooms/ABCDE/slots/guest-1--1/offer') as { type?: string } | undefined
+      expect(offer?.type).toBe('offer')
+    })
+
+    host.leave()
+    guest.leave()
+  })
 })

@@ -40,6 +40,10 @@ export const WEBRTC_MESSAGE =
 export const OFFLINE_MESSAGE = 'No pudimos contactar el servicio de conexión. Probá con otra red o más tarde.'
 export const NOT_FOUND_MESSAGE =
   'No encontramos esa sala. Revisá el código o pedile al anfitrión que la vuelva a abrir.'
+export const RECONNECTING_MESSAGE = 'Se cortó la conexión. Estamos intentando reconectar…'
+
+/** El aviso espera este plazo: un corte breve se resuelve sin que nadie lo vea. */
+export const RECONNECT_NOTICE_MS = 4_000
 
 /** Plazo para que ICE encuentre un camino si la red es lenta. La señalización ya no espera relays. */
 export const GIVE_UP_MS = 75_000
@@ -58,6 +62,8 @@ export interface Snapshot {
   myWords: string[] | null
   /** Estrategias de señalización activas (informativo). */
   strategies: string[]
+  /** Hay un reintento en curso que ya tardó lo suficiente como para avisarlo. */
+  reconnecting: boolean
 }
 
 export function isWebRtcMissing(error: string): boolean {
@@ -164,8 +170,8 @@ export function codeFromText(text: string): string {
 const HEARTBEAT_MS = 4000
 /**
  * El anfitrión publica el estado cada 4 s. Un silencio más corto puede ser la
- * pestaña en segundo plano o un canal que se trabó y después sigue: no alcanza
- * para declarar la partida perdida. Si el par se va de verdad, eso se avisa al toque.
+ * pestaña en segundo plano. Si el canal se corta, se vuelve a abrir solo; el aviso
+ * aparece recién cuando esa reconexión se demora.
  */
 const HOST_TIMEOUT_MS = 45_000
 
@@ -203,6 +209,10 @@ export class Session implements SessionLike {
   private relaySeen = false
   private iceFailed = false
   private webRtcMissing = false
+  private linkDown = false
+  private sawBye = false
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private detachBrowser: (() => void) | null = null
 
   private roomName: string | undefined
 
@@ -227,6 +237,7 @@ export class Session implements SessionLike {
       clockOffset: 0,
       myWords: null,
       strategies: [],
+      reconnecting: false,
     }
     this.transport = link ?? new Transport(code, role !== 'host')
     this.transport.onMessage = (data, peerId) => this.onMessage(data, peerId)
@@ -239,6 +250,7 @@ export class Session implements SessionLike {
     if (role === 'host') this.startHost(game)
     else this.startClient()
     this.timers.push(setInterval(() => this.checkLink(), 2000))
+    this.listenBrowser()
   }
 
   static host(name: string, roomName?: string, resume?: SavedSession): Session {
@@ -281,17 +293,24 @@ export class Session implements SessionLike {
   leave(): void {
     if (this.closed) return
     if (this.snapshot.isHost) this.transport.broadcast(JSON.stringify({ t: 'bye' } satisfies HostMsg))
-    this.closed = true
-    this.timers.forEach(clearInterval)
-    this.transport.leave()
+    this.shutdown()
     clearSaved()
   }
 
   /** Cierra sin borrar lo guardado (para recargar o reintentar). */
   close(): void {
     if (this.closed) return
+    this.shutdown()
+  }
+
+  private shutdown(): void {
     this.closed = true
     this.timers.forEach(clearInterval)
+    this.cancelReconnectTimer()
+    if (this.burstTimer) clearTimeout(this.burstTimer)
+    this.burstTimer = null
+    this.detachBrowser?.()
+    this.detachBrowser = null
     this.transport.leave()
   }
 
@@ -425,7 +444,9 @@ export class Session implements SessionLike {
     this.timers.push(
       // Reintenta el saludo hasta recibir el estado de la sala.
       setInterval(() => {
-        if (!this.snapshot.state || this.snapshot.status === 'hostLost') this.sayHello()
+        if (!this.snapshot.state || this.snapshot.status === 'hostLost' || this.snapshot.reconnecting || this.linkDown) {
+          this.sayHello()
+        }
       }, 2000),
     )
   }
@@ -462,7 +483,12 @@ export class Session implements SessionLike {
       else if (diagnosis === 'ice') this.update({ message: ICE_MESSAGE })
       return
     }
-    if (status === 'connected' && Date.now() - this.lastStateAt > HOST_TIMEOUT_MS) {
+    if (
+      status === 'connected' &&
+      !this.linkDown &&
+      !this.snapshot.reconnecting &&
+      Date.now() - this.lastStateAt > HOST_TIMEOUT_MS
+    ) {
       this.update({ status: 'hostLost', message: 'Se perdió la conexión con el anfitrión.' })
     }
   }
@@ -478,9 +504,12 @@ export class Session implements SessionLike {
       case 'state': {
         this.hostPeerId = peerId
         this.lastStateAt = Date.now()
+        this.linkDown = false
+        this.cancelReconnectTimer()
         this.update({
           status: 'connected',
           message: null,
+          reconnecting: false,
           state: msg.state,
           clockOffset: msg.state.hostNow - Date.now(),
           // Las palabras guardadas solo sirven durante la escritura de esa ronda.
@@ -498,7 +527,11 @@ export class Session implements SessionLike {
         break
       case 'bye':
         if (peerId === this.hostPeerId) {
-          this.update({ status: 'hostLost', message: 'El anfitrión cerró la sala.' })
+          this.sawBye = true
+          this.linkDown = false
+          this.cancelReconnectTimer()
+          this.transport.abandon()
+          this.update({ status: 'hostLost', reconnecting: false, message: 'El anfitrión cerró la sala.' })
         }
         break
     }
@@ -515,6 +548,8 @@ export class Session implements SessionLike {
   private onPeerJoin(peerId: string): void {
     if (this.snapshot.isHost) {
       this.markHostReady()
+      this.linkDown = false
+      this.settleReconnect()
       return
     }
     if (this.snapshot.status !== 'rejected') this.sayHello(peerId)
@@ -524,12 +559,104 @@ export class Session implements SessionLike {
     if (this.snapshot.isHost) {
       const playerId = this.peerToPlayer.get(peerId)
       this.peerToPlayer.delete(peerId)
-      if (!playerId) return
-      const stillThere = [...this.peerToPlayer.values()].includes(playerId)
-      if (!stillThere) this.applyHost({ type: 'disconnect', id: playerId })
-    } else if (peerId === this.hostPeerId && this.snapshot.status === 'connected') {
-      this.update({ status: 'hostLost', message: 'Se perdió la conexión con el anfitrión.' })
+      let removed = false
+      if (playerId) {
+        const stillThere = [...this.peerToPlayer.values()].includes(playerId)
+        removed = !stillThere
+        if (!stillThere) this.applyHost({ type: 'disconnect', id: playerId })
+      }
+      this.noteHostLink(removed)
+      return
     }
+    if (this.sawBye || !this.snapshot.state) return
+    if (this.hostPeerId !== null && peerId !== this.hostPeerId) return
+    this.hostPeerId = null
+    this.linkDown = true
+    this.armReconnectNotice()
+  }
+
+  private burstTimer: ReturnType<typeof setTimeout> | null = null
+  private burstStart = 0
+
+  /**
+   * Un jugador que se va no es un corte de la mesa. Si en un par de segundos
+   * se vacían todos los canales, o se cae el único mientras no hay red, el
+   * problema es de esta máquina.
+   */
+  private noteHostLink(removedChannel: boolean): void {
+    if (!removedChannel || !this.snapshot.state || this.sawBye) return
+    if (!this.burstTimer) {
+      this.burstStart = this.peerToPlayer.size + 1
+      this.burstTimer = setTimeout(() => {
+        this.burstTimer = null
+        this.burstStart = 0
+      }, 2_000)
+    }
+    const others = this.game?.players.filter((p) => p.id !== this.snapshot.playerId) ?? []
+    const offlineAlone = others.length === 1 && !this.browserOnline()
+    if (this.peerToPlayer.size === 0 && (this.burstStart >= 2 || offlineAlone)) this.armReconnectNotice()
+  }
+
+  private listenBrowser(): void {
+    if (typeof window === 'undefined') return
+    const onOnline = () => this.onBrowserOnline()
+    const onOffline = () => this.onBrowserOffline()
+    const onChange = () => this.transport.nudge()
+    window.addEventListener('online', onOnline)
+    window.addEventListener('offline', onOffline)
+    const conn = (
+      navigator as Navigator & {
+        connection?: { addEventListener(type: string, cb: () => void): void; removeEventListener(type: string, cb: () => void): void }
+      }
+    ).connection
+    conn?.addEventListener('change', onChange)
+    this.detachBrowser = () => {
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('offline', onOffline)
+      conn?.removeEventListener('change', onChange)
+    }
+  }
+
+  private onBrowserOffline(): void {
+    if (this.closed || this.sawBye || !this.snapshot.state) return
+    this.armReconnectNotice()
+  }
+
+  private onBrowserOnline(): void {
+    this.transport.nudge()
+    const intact = this.snapshot.isHost
+      ? this.peerToPlayer.size > 0 || (this.game?.players.filter((p) => p.id !== this.snapshot.playerId).length ?? 0) === 0
+      : !this.linkDown
+    if (intact) this.settleReconnect()
+  }
+
+  private browserOnline(): boolean {
+    return typeof navigator === 'undefined' || navigator.onLine !== false
+  }
+
+  private armReconnectNotice(): void {
+    if (this.sawBye || this.closed || this.snapshot.reconnecting || this.reconnectTimer) return
+    if (this.snapshot.status === 'rejected' || this.snapshot.status === 'hostLost') return
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      if (this.sawBye || this.closed) return
+      this.update({ reconnecting: true, message: RECONNECTING_MESSAGE })
+    }, RECONNECT_NOTICE_MS)
+  }
+
+  private cancelReconnectTimer(): void {
+    if (!this.reconnectTimer) return
+    clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = null
+  }
+
+  private settleReconnect(): void {
+    this.cancelReconnectTimer()
+    if (!this.snapshot.reconnecting && this.snapshot.message !== RECONNECTING_MESSAGE) return
+    this.update({
+      reconnecting: false,
+      message: this.snapshot.message === RECONNECTING_MESSAGE ? null : this.snapshot.message,
+    })
   }
 
   private onSignaling(open: boolean): void {

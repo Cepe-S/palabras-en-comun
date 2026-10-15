@@ -2,7 +2,14 @@ import { WORDS } from '../data/words'
 import { createGame, reduce } from '../game/engine'
 import { DRAW_MS, START_MS } from '../game/types'
 import type { Action, Ctx, GameState, RevealStep } from '../game/types'
-import { ICE_MESSAGE, NOT_FOUND_MESSAGE, OFFLINE_MESSAGE, PUBLISHING_MESSAGE, type Status } from '../net/room'
+import {
+  ICE_MESSAGE,
+  NOT_FOUND_MESSAGE,
+  OFFLINE_MESSAGE,
+  PUBLISHING_MESSAGE,
+  RECONNECTING_MESSAGE,
+  type Status,
+} from '../net/room'
 
 /* Datos de prueba para el DevHUD. Todo se arma con el motor real (`reduce`), así que
    los estados son los mismos que produciría una partida de verdad. */
@@ -38,6 +45,7 @@ export interface ScenarioBuild {
   status?: Status
   message?: string | null
   myWords?: string[] | null
+  reconnecting?: boolean
 }
 
 type ScenarioBase = { id: string; group: string; label: string }
@@ -184,6 +192,11 @@ export const SCENARIOS: Scenario[] = [
     game: lobbyGame(opts),
     status: 'hostLost',
     message: 'Se perdió la conexión con el anfitrión.',
+  })),
+  session('Ventanas', 'reconnecting', 'Aviso: reconectando', (opts) => ({
+    game: lobbyGame(opts),
+    message: RECONNECTING_MESSAGE,
+    reconnecting: true,
   })),
 
   session('Conexión', 'connecting', 'Conectando', () => ({
